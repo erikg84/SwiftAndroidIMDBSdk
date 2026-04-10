@@ -69,12 +69,23 @@ IOS_PID_FILE="$LOG_DIR/ios.pid"
     BUILD="$ROOT/build/xc"
     rm -rf "$BUILD"
 
+    # SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO: works around a known bug in
+    # Factory where Factory.swiftinterface has a naming conflict (the generic
+    # struct Factory<T> vs the module Factory) that causes verification to fail
+    # when BUILD_LIBRARY_FOR_DISTRIBUTION=YES. Our public API surface is clean
+    # (internal import Factory keeps Factory out of our .swiftinterface).
+    XCBUILD_FLAGS=(
+        SKIP_INSTALL=NO
+        BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+        SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
+    )
+
     log "Archiving iOS device slice..." | tee -a "$IOS_LOG"
     xcodebuild archive \
         -scheme SwiftAndroidSDK \
         -destination "generic/platform=iOS" \
         -archivePath "$BUILD/SwiftAndroidSDK-iOS.xcarchive" \
-        SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+        "${XCBUILD_FLAGS[@]}" \
         -quiet >> "$IOS_LOG" 2>&1
 
     log "Archiving iOS Simulator slice..." | tee -a "$IOS_LOG"
@@ -82,7 +93,7 @@ IOS_PID_FILE="$LOG_DIR/ios.pid"
         -scheme SwiftAndroidSDK \
         -destination "generic/platform=iOS Simulator" \
         -archivePath "$BUILD/SwiftAndroidSDK-iOS-Sim.xcarchive" \
-        SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+        "${XCBUILD_FLAGS[@]}" \
         -quiet >> "$IOS_LOG" 2>&1
 
     log "Creating XCFramework..." | tee -a "$IOS_LOG"

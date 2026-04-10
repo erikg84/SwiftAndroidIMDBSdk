@@ -69,8 +69,8 @@ public final class TMDBContainer: @unchecked Sendable {
     /// A ready-to-use ViewModel. Cached — same instance until `reset()`.
     public var viewModel: TMDBViewModel { _TMDBContainer.shared.viewModel() }
 
-    // ── Test hooks (accessible via @testable import in unit tests) ───────────
-
+    // ── Test hooks (not available on Android/Linux — closures can't cross JNI) ──
+#if canImport(Darwin)
     /// Override the TMDB configuration. Useful in tests.
     public func registerConfiguration(_ factory: @Sendable @escaping () -> TMDBConfiguration) {
         _TMDBContainer.shared.configuration.register(factory: factory)
@@ -85,6 +85,7 @@ public final class TMDBContainer: @unchecked Sendable {
     public func registerRepository(_ factory: @Sendable @escaping () -> any TMDBRepository) {
         _TMDBContainer.shared.repository.register(factory: factory)
     }
+#endif
 
     /// Reset all cached/singleton instances. Call in test `tearDown`.
     public func reset() { _TMDBContainer.shared.manager.reset() }
