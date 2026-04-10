@@ -208,6 +208,21 @@ struct RepositoryTests {
         #expect(page.results[0].title == "Interstellar")
     }
 
+    @Test func trendingMoviesDecodesPage() async throws {
+        let repo = makeRepo(json: moviePageJSON)
+        let page = try await repo.trendingMovies(timeWindow: .day)
+        #expect(page.page == 1)
+        #expect(page.results.count == 1)
+        #expect(page.results[0].title == "Interstellar")
+    }
+
+    @Test func searchMoviesRespectsPageParameter() async throws {
+        let repo = makeRepo(json: moviePageJSON)
+        // Page 2 — mock always returns the same fixture, but we verify no throw
+        let page = try await repo.searchMovies(query: "Interstellar", page: 2)
+        #expect(page.results[0].title == "Interstellar")
+    }
+
     @Test func searchMoviesThrowsOnEmptyQuery() async throws {
         let repo = makeRepo(json: moviePageJSON)
         await #expect(throws: TMDBError.emptyQuery) {
