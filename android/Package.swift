@@ -39,6 +39,9 @@ let package = Package(
             exclude: [
                 // swift-java.config is consumed by JExtractSwiftPlugin, not the Swift compiler.
                 "swift-java.config",
+                // Test hooks use @escaping closures that JExtractSwiftPlugin cannot bridge to JNI.
+                // These methods are only needed on iOS/macOS (Darwin) for unit testing.
+                "Container/TMDBContainerTestHooks.swift",
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v5),

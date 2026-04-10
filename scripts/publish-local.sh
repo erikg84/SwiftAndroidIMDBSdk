@@ -69,15 +69,15 @@ IOS_PID_FILE="$LOG_DIR/ios.pid"
     BUILD="$ROOT/build/xc"
     rm -rf "$BUILD"
 
-    # SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO: works around a known bug in
-    # Factory where Factory.swiftinterface has a naming conflict (the generic
-    # struct Factory<T> vs the module Factory) that causes verification to fail
-    # when BUILD_LIBRARY_FOR_DISTRIBUTION=YES. Our public API surface is clean
-    # (internal import Factory keeps Factory out of our .swiftinterface).
+    # SKIP_INSTALL=NO is required so the framework is copied into the archive.
+    # BUILD_LIBRARY_FOR_DISTRIBUTION is intentionally omitted: enabling it requires
+    # ALL dependencies (including Factory) to generate a .swiftinterface, but Factory
+    # has a known naming-conflict bug (Factory<T> struct vs Factory module) that fails
+    # verification in Swift 6.3. Without the flag, the XCFramework embeds .swiftmodule
+    # files instead — consumers must use a compatible Swift version, which is acceptable
+    # for a source-primary SDK where SPM is the recommended integration path.
     XCBUILD_FLAGS=(
         SKIP_INSTALL=NO
-        BUILD_LIBRARY_FOR_DISTRIBUTION=YES
-        SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
     )
 
     log "Archiving iOS device slice..." | tee -a "$IOS_LOG"
