@@ -79,15 +79,15 @@ gh release create "$TAG" \
 Add to your \`build.gradle\`:
 \`\`\`groovy
 dependencies {
-    implementation 'io.github.YOUR_ORG:swift-android-sdk:$VERSION'
+    implementation 'io.github.erikg84:swift-android-sdk:$VERSION'
 }
 \`\`\`
 
 ### iOS (Swift Package Manager)
-In Xcode: File → Add Package Dependencies → \`https://github.com/YOUR_ORG/SwiftAndroidSdk\`
+In Xcode: File → Add Package Dependencies → \`https://github.com/erikg84/SwiftAndroidSdk\`
 Or in \`Package.swift\`:
 \`\`\`swift
-.package(url: \"https://github.com/YOUR_ORG/SwiftAndroidSdk\", from: \"$VERSION\")
+.package(url: \"https://github.com/erikg84/SwiftAndroidSdk\", from: \"$VERSION\")
 \`\`\`
 
 ### AAR SHA-256
