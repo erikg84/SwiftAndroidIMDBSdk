@@ -6,9 +6,9 @@ import Foundation
 /// On iOS, wrap calls in a `Task` from your `@Observable` or `ObservableObject`.
 /// On Android, swift-java bridges each `async` method to a `CompletableFuture`.
 public final class TMDBViewModel: Sendable {
-    private let repository: TMDBRepository
+    private let repository: any TMDBRepository
 
-    public init(repository: TMDBRepository) {
+    public init(repository: any TMDBRepository) {
         self.repository = repository
     }
 

@@ -21,6 +21,8 @@ let package = Package(
         ),
     ],
     dependencies: [
+        // Factory: Compile-time safe DI — pure Swift, Foundation-only, Linux/Android compatible.
+        .package(url: "https://github.com/hmlongco/Factory", from: "2.4.0"),
         // swift-java: provides the JExtractSwiftPlugin and SwiftJava runtime macros.
         // Pin to a release tag before shipping to production.
         .package(url: "https://github.com/swiftlang/swift-java.git", from: "0.1.2"),
@@ -29,6 +31,7 @@ let package = Package(
         .target(
             name: "SwiftAndroidSDK",
             dependencies: [
+                .product(name: "Factory", package: "Factory"),
                 // SwiftJava provides @JavaClass / @JavaMethod macros for advanced bridging.
                 .product(name: "SwiftJava", package: "swift-java"),
             ],

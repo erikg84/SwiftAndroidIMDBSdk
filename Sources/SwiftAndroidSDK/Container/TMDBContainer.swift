@@ -1,36 +1,61 @@
 import Foundation
+import Factory
 
-/// Composition root for the SwiftAndroidSDK.
+/// Factory-backed DI container for SwiftAndroidSDK.
 ///
-/// Initialise once (e.g. at app launch) with your ``TMDBConfiguration``,
-/// then inject ``viewModel`` or ``repository`` wherever needed.
-///
+/// **One-time setup at app launch:**
 /// ```swift
-/// let sdk = TMDBContainer(configuration: TMDBConfiguration(
-///     bearerToken: BuildConfig.TMDB_BEARER_TOKEN  // read from local.properties / env
-/// ))
-///
-/// let page = try await sdk.viewModel.fetchPopularMovies()
+/// TMDBContainer.shared.configuration.register {
+///     TMDBConfiguration(bearerToken: BuildConfig.TMDB_TOKEN)
+/// }
 /// ```
-public final class TMDBContainer: Sendable {
-    public let configuration: TMDBConfiguration
-    public let httpClient: HTTPClient
-    public let repository: TMDBRepository
-    public let viewModel: TMDBViewModel
+///
+/// **iOS — `@Injected` property wrapper:**
+/// ```swift
+/// @Injected(\TMDBContainer.viewModel) private var vm
+/// ```
+///
+/// **Android — direct call via JNI:**
+/// ```swift
+/// let vm = TMDBContainer.shared.viewModel()
+/// ```
+///
+/// **Testing — override any dependency, reset after:**
+/// ```swift
+/// TMDBContainer.shared.httpClient.register { MockHTTPClient(...) }
+/// defer { TMDBContainer.shared.reset() }
+/// ```
+public final class TMDBContainer: SharedContainer {
+    public static let shared = TMDBContainer()
+    public let manager = ContainerManager()
+    public init() {}
+}
 
-    /// Create the container.
-    /// - Parameters:
-    ///   - configuration: TMDB credentials and settings.
-    ///   - httpClient: Override for testing; defaults to `URLSessionHTTPClient`.
-    public init(
-        configuration: TMDBConfiguration,
-        httpClient: HTTPClient? = nil
-    ) {
-        self.configuration = configuration
-        let client = httpClient ?? URLSessionHTTPClient()
-        self.httpClient = client
-        let repo = TMDBRepositoryImpl(configuration: configuration, httpClient: client)
-        self.repository = repo
-        self.viewModel = TMDBViewModel(repository: repo)
+extension TMDBContainer {
+
+    /// TMDB API credentials. **Must be registered before first SDK call.**
+    public var configuration: Factory<TMDBConfiguration> {
+        self { TMDBConfiguration(bearerToken: "") }
+    }
+
+    /// Shared HTTP client — singleton scope, one `URLSession` per container lifetime.
+    /// Override in tests: `TMDBContainer.shared.httpClient.register { MockHTTPClient(...) }`
+    var httpClient: Factory<any HTTPClient> {
+        self { URLSessionHTTPClient() as any HTTPClient }.singleton
+    }
+
+    /// TMDB repository — singleton, backed by the shared `httpClient`.
+    public var repository: Factory<any TMDBRepository> {
+        self {
+            TMDBRepositoryImpl(
+                configuration: self.configuration(),
+                httpClient: self.httpClient()
+            ) as any TMDBRepository
+        }.singleton
+    }
+
+    /// TMDB ViewModel — cached scope, re-created after a container reset.
+    public var viewModel: Factory<TMDBViewModel> {
+        self { TMDBViewModel(repository: self.repository()) }.cached
     }
 }

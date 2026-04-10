@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Factory
 @testable import SwiftAndroidSDK
 
 // MARK: - Mock HTTP Client
@@ -250,19 +251,33 @@ struct ViewModelTests {
 
 // MARK: - Container Tests
 
-@Suite("TMDBContainer")
+@Suite("TMDBContainer", .serialized)
 struct ContainerTests {
-    @Test func containerWiresComponents() {
-        let config = TMDBConfiguration(bearerToken: "test_tok", apiKey: "test_key")
-        let container = TMDBContainer(configuration: config)
-        #expect(container.configuration.bearerToken == "test_tok")
+
+    /// Reset shared container state before each test to prevent leakage.
+    init() { TMDBContainer.shared.reset() }
+
+    @Test func registersConfiguration() {
+        TMDBContainer.shared.configuration.register {
+            TMDBConfiguration(bearerToken: "test_tok", apiKey: "test_key")
+        }
+        defer { TMDBContainer.shared.reset() }
+
+        let config = TMDBContainer.shared.configuration()
+        #expect(config.bearerToken == "test_tok")
+        #expect(config.apiKey == "test_key")
     }
 
-    @Test func containerAcceptsCustomHTTPClient() async throws {
-        let config = TMDBConfiguration(bearerToken: "tok")
-        let mock = MockHTTPClient(moviePageJSON)
-        let container = TMDBContainer(configuration: config, httpClient: mock)
-        let page = try await container.viewModel.fetchPopularMovies()
+    @Test func injectsCustomHTTPClientViaFactory() async throws {
+        TMDBContainer.shared.configuration.register {
+            TMDBConfiguration(bearerToken: "tok")
+        }
+        TMDBContainer.shared.httpClient.register {
+            MockHTTPClient(moviePageJSON) as any HTTPClient
+        }
+        defer { TMDBContainer.shared.reset() }
+
+        let page = try await TMDBContainer.shared.viewModel().fetchPopularMovies()
         #expect(page.results[0].title == "Interstellar")
     }
 

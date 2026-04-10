@@ -15,13 +15,22 @@ let package = Package(
             targets: ["SwiftAndroidSDK"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/hmlongco/Factory", from: "2.4.0"),
+    ],
     targets: [
         .target(
-            name: "SwiftAndroidSDK"
+            name: "SwiftAndroidSDK",
+            dependencies: [
+                .product(name: "Factory", package: "Factory"),
+            ]
         ),
         .testTarget(
             name: "SwiftAndroidSDKTests",
-            dependencies: ["SwiftAndroidSDK"]
+            dependencies: [
+                "SwiftAndroidSDK",
+                .product(name: "Factory", package: "Factory"),
+            ]
         ),
     ]
 )
