@@ -12,7 +12,7 @@
 /// - ``TMDBContainer`` — composition root / DI container
 /// - ``TMDBViewModel`` — async API methods (bridges to Java CompletableFuture on Android)
 /// - ``TMDBRepository`` — protocol for direct injection / mocking
-public enum SwiftAndroidSDK {
+public enum SDK {
     /// SDK semantic version string.
     public static let version = "0.1.0"
 }

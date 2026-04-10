@@ -296,6 +296,6 @@ struct ContainerTests {
     }
 
     @Test func sdkVersion() {
-        #expect(!SwiftAndroidSDK.version.isEmpty)
+        #expect(!SDK.version.isEmpty)
     }
 }
