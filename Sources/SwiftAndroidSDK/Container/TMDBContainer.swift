@@ -1,51 +1,23 @@
 import Foundation
-import Factory
+// Internal import: Factory types do not appear in the public .swiftinterface,
+// which prevents a known naming-conflict bug when building with
+// BUILD_LIBRARY_FOR_DISTRIBUTION=YES (XCFramework).
+internal import Factory
 
-/// Factory-backed DI container for SwiftAndroidSDK.
-///
-/// **One-time setup at app launch:**
-/// ```swift
-/// TMDBContainer.shared.configuration.register {
-///     TMDBConfiguration(bearerToken: BuildConfig.TMDB_TOKEN)
-/// }
-/// ```
-///
-/// **iOS — `@Injected` property wrapper:**
-/// ```swift
-/// @Injected(\TMDBContainer.viewModel) private var vm
-/// ```
-///
-/// **Android — direct call via JNI:**
-/// ```swift
-/// let vm = TMDBContainer.shared.viewModel()
-/// ```
-///
-/// **Testing — override any dependency, reset after:**
-/// ```swift
-/// TMDBContainer.shared.httpClient.register { MockHTTPClient(...) }
-/// defer { TMDBContainer.shared.reset() }
-/// ```
-public final class TMDBContainer: SharedContainer {
-    public static let shared = TMDBContainer()
-    public let manager = ContainerManager()
-    public init() {}
+// ─── Internal Factory container (hidden from consumers) ──────────────────────
+final class _TMDBContainer: SharedContainer, @unchecked Sendable {
+    static let shared = _TMDBContainer()
+    var manager = ContainerManager()
 }
 
-extension TMDBContainer {
-
-    /// TMDB API credentials. **Must be registered before first SDK call.**
-    public var configuration: Factory<TMDBConfiguration> {
+extension _TMDBContainer {
+    var configuration: Factory<TMDBConfiguration> {
         self { TMDBConfiguration(bearerToken: "") }
     }
-
-    /// Shared HTTP client — singleton scope, one `URLSession` per container lifetime.
-    /// Override in tests: `TMDBContainer.shared.httpClient.register { MockHTTPClient(...) }`
     var httpClient: Factory<any HTTPClient> {
         self { URLSessionHTTPClient() as any HTTPClient }.singleton
     }
-
-    /// TMDB repository — singleton, backed by the shared `httpClient`.
-    public var repository: Factory<any TMDBRepository> {
+    var repository: Factory<any TMDBRepository> {
         self {
             TMDBRepositoryImpl(
                 configuration: self.configuration(),
@@ -53,9 +25,67 @@ extension TMDBContainer {
             ) as any TMDBRepository
         }.singleton
     }
-
-    /// TMDB ViewModel — cached scope, re-created after a container reset.
-    public var viewModel: Factory<TMDBViewModel> {
+    var viewModel: Factory<TMDBViewModel> {
         self { TMDBViewModel(repository: self.repository()) }.cached
     }
+}
+
+// ─── Public facade — no Factory types in public surface ──────────────────────
+/// Dependency container for SwiftAndroidSDK.
+///
+/// **One-time setup at app launch:**
+/// ```swift
+/// TMDBContainer.shared.configure(bearerToken: "your_token")
+/// ```
+///
+/// **Android — direct call via JNI:**
+/// ```swift
+/// let vm = TMDBContainer.shared.viewModel
+/// ```
+///
+/// **Testing — override any dependency, reset after:**
+/// ```swift
+/// TMDBContainer.shared.registerHTTPClient { MockHTTPClient(...) }
+/// defer { TMDBContainer.shared.reset() }
+/// ```
+public final class TMDBContainer: @unchecked Sendable {
+    public static let shared = TMDBContainer()
+    private init() {}
+
+    // ── Configuration ────────────────────────────────────────────────────────
+
+    /// Configure TMDB credentials. Call once at app launch before any API call.
+    public func configure(bearerToken: String, apiKey: String = "") {
+        _TMDBContainer.shared.configuration.register {
+            TMDBConfiguration(bearerToken: bearerToken, apiKey: apiKey)
+        }
+    }
+
+    // ── Resolved dependencies ────────────────────────────────────────────────
+
+    /// The TMDB repository. Singleton for the container's lifetime.
+    public var repository: any TMDBRepository { _TMDBContainer.shared.repository() }
+
+    /// A ready-to-use ViewModel. Cached — same instance until `reset()`.
+    public var viewModel: TMDBViewModel { _TMDBContainer.shared.viewModel() }
+
+    // ── Test hooks (accessible via @testable import in unit tests) ───────────
+
+    /// Override the TMDB configuration. Useful in tests.
+    public func registerConfiguration(_ factory: @Sendable @escaping () -> TMDBConfiguration) {
+        _TMDBContainer.shared.configuration.register(factory: factory)
+    }
+
+    /// Override the HTTP client. Useful for injecting mock responses in tests.
+    public func registerHTTPClient(_ factory: @Sendable @escaping () -> any HTTPClient) {
+        _TMDBContainer.shared.httpClient.register(factory: factory)
+    }
+
+    /// Override the repository. Useful for injecting a full mock in tests.
+    public func registerRepository(_ factory: @Sendable @escaping () -> any TMDBRepository) {
+        _TMDBContainer.shared.repository.register(factory: factory)
+    }
+
+    /// Reset all cached/singleton instances. Call in test `tearDown`.
+    public func reset() { _TMDBContainer.shared.manager.reset() }
 }

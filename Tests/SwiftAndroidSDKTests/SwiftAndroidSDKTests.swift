@@ -1,6 +1,5 @@
 import Testing
 import Foundation
-import Factory
 @testable import SwiftAndroidSDK
 
 // MARK: - Mock HTTP Client
@@ -273,26 +272,26 @@ struct ContainerTests {
     init() { TMDBContainer.shared.reset() }
 
     @Test func registersConfiguration() {
-        TMDBContainer.shared.configuration.register {
+        TMDBContainer.shared.registerConfiguration {
             TMDBConfiguration(bearerToken: "test_tok", apiKey: "test_key")
         }
         defer { TMDBContainer.shared.reset() }
 
-        let config = TMDBContainer.shared.configuration()
+        let config = _TMDBContainer.shared.configuration()
         #expect(config.bearerToken == "test_tok")
         #expect(config.apiKey == "test_key")
     }
 
     @Test func injectsCustomHTTPClientViaFactory() async throws {
-        TMDBContainer.shared.configuration.register {
+        TMDBContainer.shared.registerConfiguration {
             TMDBConfiguration(bearerToken: "tok")
         }
-        TMDBContainer.shared.httpClient.register {
+        TMDBContainer.shared.registerHTTPClient {
             MockHTTPClient(moviePageJSON) as any HTTPClient
         }
         defer { TMDBContainer.shared.reset() }
 
-        let page = try await TMDBContainer.shared.viewModel().fetchPopularMovies()
+        let page = try await TMDBContainer.shared.viewModel.fetchPopularMovies()
         #expect(page.results[0].title == "Interstellar")
     }
 
