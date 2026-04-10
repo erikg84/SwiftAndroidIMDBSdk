@@ -11,7 +11,7 @@ plugins {
 // Project coordinates — change these before publishing.
 // ---------------------------------------------------------------------------
 ext {
-    sdkGroupId    = findProperty('GROUP_ID')    ?: 'io.github.YOUR_ORG'
+    sdkGroupId    = findProperty('GROUP_ID')    ?: 'io.github.erikg84'
     sdkArtifactId = findProperty('ARTIFACT_ID') ?: 'swift-android-sdk'
     sdkVersion    = findProperty('VERSION_NAME') ?: '1.0.0-SNAPSHOT'
 }
@@ -20,7 +20,7 @@ ext {
 // Android library configuration
 // ---------------------------------------------------------------------------
 android {
-    namespace 'io.github.YOUR_ORG.swiftandroidsdk'
+    namespace 'io.github.erikg84.swiftandroidsdk'
     compileSdk 34
 
     defaultConfig {
@@ -210,7 +210,7 @@ afterEvaluate {
                 pom {
                     name        = 'SwiftAndroidSDK'
                     description = 'Cross-platform Swift SDK — Android AAR distribution'
-                    url         = 'https://github.com/YOUR_ORG/SwiftAndroidSdk'
+                    url         = 'https://github.com/erikg84/SwiftAndroidSdk'
 
                     licenses {
                         license {
@@ -221,16 +221,16 @@ afterEvaluate {
 
                     developers {
                         developer {
-                            id    = 'YOUR_GITHUB_ID'
-                            name  = 'Your Name'
-                            email = 'your@email.com'
+                            id    = 'erikg84'
+                            name  = 'Erik Gutierrez'
+                            email = 'erikgutierrez84@gmail.com'
                         }
                     }
 
                     scm {
-                        connection          = 'scm:git:git://github.com/YOUR_ORG/SwiftAndroidSdk.git'
-                        developerConnection = 'scm:git:ssh://github.com:YOUR_ORG/SwiftAndroidSdk.git'
-                        url                 = 'https://github.com/YOUR_ORG/SwiftAndroidSdk/tree/main'
+                        connection          = 'scm:git:git://github.com/erikg84/SwiftAndroidSdk.git'
+                        developerConnection = 'scm:git:ssh://github.com:erikg84/SwiftAndroidSdk.git'
+                        url                 = 'https://github.com/erikg84/SwiftAndroidSdk/tree/main'
                     }
                 }
             }

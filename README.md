@@ -16,13 +16,13 @@ A cross-platform Swift SDK — business logic and utilities shared between **iOS
 
 ### Xcode
 1. **File → Add Package Dependencies**
-2. Enter the repository URL: `https://github.com/YOUR_ORG/SwiftAndroidSdk`
+2. Enter the repository URL: `https://github.com/erikg84/SwiftAndroidSdk`
 3. Choose version rule: **Up to Next Major** from `1.0.0`
 
 ### Package.swift
 ```swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_ORG/SwiftAndroidSdk", from: "1.0.0"),
+    .package(url: "https://github.com/erikg84/SwiftAndroidSdk", from: "1.0.0"),
 ],
 targets: [
     .target(
@@ -52,7 +52,7 @@ print(isValidJSON(#"{"ok":true}"#)) // true
 ### build.gradle
 ```groovy
 dependencies {
-    implementation 'io.github.YOUR_ORG:swift-android-sdk:1.0.0'
+    implementation 'io.github.erikg84:swift-android-sdk:1.0.0'
 }
 ```
 
@@ -60,8 +60,8 @@ dependencies {
 
 ### Quick start (Kotlin)
 ```kotlin
-import io.github.YOUR_ORG.swiftandroidsdk.SwiftAndroidSDK
-import io.github.YOUR_ORG.swiftandroidsdk.SwiftAndroidSDKKt
+import io.github.erikg84.swiftandroidsdk.SwiftAndroidSDK
+import io.github.erikg84.swiftandroidsdk.SwiftAndroidSDKKt
 
 val sdk = SwiftAndroidSDK()
 println(sdk.sdkVersion())                    // "1.0.0"

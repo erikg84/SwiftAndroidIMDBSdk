@@ -26,7 +26,7 @@ For integration instructions, see [README.md](README.md).
 ## First-Time Setup
 
 ```bash
-git clone https://github.com/YOUR_ORG/SwiftAndroidSdk
+git clone https://github.com/erikg84/SwiftAndroidSdk
 cd SwiftAndroidSdk
 bash scripts/bootstrap.sh
 ```
@@ -130,7 +130,7 @@ cd android && ./gradlew publishReleasePublicationToLocalFileRepository
 
 ## Updating the SDK Namespace
 
-Before first publish, replace all `YOUR_ORG` / `YOUR_GITHUB_ID` placeholders:
+Before first publish, replace all `erikg84` / `erikg84` placeholders:
 
 | File | Field |
 |------|-------|
