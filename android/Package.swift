@@ -36,6 +36,10 @@ let package = Package(
                 .product(name: "SwiftJava", package: "swift-java"),
             ],
             // Sources symlink resolves to ../../Sources/SwiftAndroidSDK at the filesystem level.
+            exclude: [
+                // swift-java.config is consumed by JExtractSwiftPlugin, not the Swift compiler.
+                "swift-java.config",
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ],

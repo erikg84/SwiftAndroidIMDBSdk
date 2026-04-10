@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 enum Endpoint {
     case trendingAll(timeWindow: TimeWindow, page: Int, language: String)
