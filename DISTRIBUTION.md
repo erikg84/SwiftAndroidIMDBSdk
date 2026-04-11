@@ -221,7 +221,7 @@ GitHub Apps cannot be created via the REST API (the `POST /orgs/{org}/apps` endp
    gh secret set SPM_WRAPPER_APP_PRIVATE_KEY < /path/to/downloaded-key.pem
    ```
 
-   The workflow's `update-spm-wrapper` job uses [`actions/create-github-app-token@v2`](https://github.com/actions/create-github-app-token) to mint a fresh installation token from these two secrets at the start of every release run.
+   The workflow's `update-spm-wrapper` job uses [`actions/create-github-app-token@v3`](https://github.com/actions/create-github-app-token) to mint a fresh installation token from these two secrets at the start of every release run.
 
 That's the entire setup. From the next tag push onward, the workflow updates the wrapper repo automatically.
 

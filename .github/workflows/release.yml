@@ -437,7 +437,7 @@ jobs:
       # instead — see the alternative in DISTRIBUTION.md#alternative-fgpat.
       - name: Mint GitHub App token for wrapper repo
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.SPM_WRAPPER_APP_ID }}
           private-key: ${{ secrets.SPM_WRAPPER_APP_PRIVATE_KEY }}
