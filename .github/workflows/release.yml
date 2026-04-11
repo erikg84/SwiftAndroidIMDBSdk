@@ -10,14 +10,33 @@ permissions:
 
 jobs:
   # ── XCFramework (iOS + macOS) ────────────────────────────────────────────────
+  # NOTE: This job may fail due to a known upstream bug in Factory 2.x:
+  # With BUILD_LIBRARY_FOR_DISTRIBUTION=YES, Factory's .swiftinterface contains
+  # "extension Factory.Scope" where "Factory." is ambiguous between the module
+  # and the generic struct Factory<T>, causing interface verification to fail.
+  # SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO suppresses verification of OUR
+  # generated interface but cannot suppress the error originating in Factory's
+  # own .swiftinterface. When Factory publishes a fix, remove this comment.
+  # The primary iOS distribution is SPM source — the XCFramework is a bonus.
   build-xcframework:
     name: Build XCFramework
     runs-on: macos-15
+    continue-on-error: true   # XCFramework is a best-effort artifact; SPM source is primary
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      - name: Select Xcode (latest Xcode 16.x on runner)
+        # Swift 6.3 requires Xcode 16.3+. Select the highest available Xcode 16.x
+        # rather than hardcoding a minor version that may not exist on the runner.
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          if [[ -z "$XCODE" ]]; then
+            echo "No Xcode 16.x found; using runner default"
+          else
+            echo "Using $XCODE"
+            sudo xcode-select -s "$XCODE/Contents/Developer"
+          fi
+          swift --version
 
       - name: Archive — iOS device
         run: |
@@ -26,7 +45,8 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath "$RUNNER_TEMP/ios.xcarchive" \
             SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
 
       - name: Archive — iOS Simulator
         run: |
@@ -35,7 +55,8 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             -archivePath "$RUNNER_TEMP/ios-sim.xcarchive" \
             SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
 
       - name: Archive — macOS
         run: |
@@ -44,7 +65,8 @@ jobs:
             -destination "generic/platform=macOS" \
             -archivePath "$RUNNER_TEMP/macos.xcarchive" \
             SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
 
       - name: Create XCFramework
         run: |
@@ -88,53 +110,69 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup JDK 25
+        # swift-java's swiftkit-core module requires JDK 25 to compile.
+        # Normal Gradle/Android builds fall back to the toolchain default.
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
 
-      - name: Cache Swift toolchain
+      - name: Cache Swift 6.3 toolchain
         uses: actions/cache@v4
         with:
           path: /tmp/swift-6.3
-          key: swift-6.3-ubuntu24
+          key: swift-6.3-ubuntu24-${{ runner.arch }}
 
       - name: Install Swift 6.3
         run: |
-          if [ ! -d /tmp/swift-6.3 ]; then
+          if [ ! -d /tmp/swift-6.3/usr/bin/swift ]; then
             curl -fsSL "https://download.swift.org/swift-6.3-release/ubuntu2404/swift-6.3-RELEASE/swift-6.3-RELEASE-ubuntu24.04.tar.gz" -o /tmp/swift.tar.gz
             mkdir -p /tmp/swift-6.3
             tar xzf /tmp/swift.tar.gz -C /tmp/swift-6.3 --strip-components=1
+            rm /tmp/swift.tar.gz
           fi
           echo "/tmp/swift-6.3/usr/bin" >> $GITHUB_PATH
 
-      - name: Cache Swift Android SDK
+      - name: Cache Swift Android SDK bundle
         uses: actions/cache@v4
+        id: sdk-cache
         with:
-          path: ~/.swiftpm/swift-sdks
+          path: ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
           key: swift-android-sdk-6.3
 
       - name: Install Swift Android SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
           swift sdk install \
-            "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE_android.artifactbundle.tar.gz"
-        # NOTE: If the above URL 404s, check https://www.swift.org/install/linux/tarball/
-        # and update to the current android SDK artifact bundle URL + add --checksum
+            "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
+            --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
 
-      - name: Setup Android NDK r27
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: latest
           accept-android-sdk-licenses: true
 
       - name: Install NDK r27d
-        run: sdkmanager "ndk;27.2.12479018"
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
 
-      - name: Cache Maven Local (swift-java bootstrap)
+      - name: Configure Swift Android SDK (link NDK headers)
+        # setup-android-sdk.sh creates symlinks from the Swift SDK bundle into the NDK.
+        # Must run after ANDROID_NDK_HOME is set; idempotent on re-runs.
+        run: |
+          cd ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle/swift-android
+          ./scripts/setup-android-sdk.sh
+
+      - name: Cache Maven Local (swiftkit-core bootstrap)
         uses: actions/cache@v4
+        id: m2-cache
         with:
-          path: ~/.m2/repository/org/swift-java
-          key: swift-java-bootstrap-${{ hashFiles('android/Package.swift') }}
+          # Cache key includes android/Package.swift so any swift-java version bump
+          # busts the cache and forces a fresh bootstrap.
+          path: ~/.m2/repository/org/swift
+          key: swiftkit-core-${{ hashFiles('android/Package.swift') }}
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -149,28 +187,43 @@ jobs:
         working-directory: android
         run: swift package resolve
 
-      - name: Bootstrap swift-java → Maven Local
+      - name: Bootstrap swiftkit-core → Maven Local
+        # swiftkit-core (the Java JNI runtime for swift-java) is not yet on Maven Central.
+        # We must build it from the swift-java checkout and publish to ~/.m2.
+        # Only the :SwiftKitCore subproject is needed; -PskipSamples=true avoids building
+        # the rest of the swift-java repo (which would pull in many more dependencies).
+        if: steps.m2-cache.outputs.cache-hit != 'true'
         working-directory: android
         run: |
-          SWIFT_JAVA_DIR=$(swift package show-dependencies --format json \
-            | python3 -c "import json,sys; deps=json.load(sys.stdin)['dependencies']; \
-              [print(d['path']) for d in deps if 'swift-java' in d['identity']]" 2>/dev/null \
-            || find .build/checkouts -maxdepth 1 -name "swift-java*" -type d | head -1)
-          echo "swift-java checkout: $SWIFT_JAVA_DIR"
-          cd "$SWIFT_JAVA_DIR" && ./gradlew publishToMavenLocal --no-daemon
+          SWIFT_JAVA_DIR=$(find .build/checkouts -maxdepth 1 -name "swift-java*" -type d | head -1)
+          if [[ -z "$SWIFT_JAVA_DIR" ]]; then
+            echo "ERROR: swift-java checkout not found under android/.build/checkouts/"
+            exit 1
+          fi
+          echo "Bootstrapping from: $SWIFT_JAVA_DIR"
+          cd "$SWIFT_JAVA_DIR"
+          ./gradlew :SwiftKitCore:publishToMavenLocal -PskipSamples=true --no-daemon
 
       - name: Build AAR
         working-directory: android
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Locate and rename AAR
         id: aar
         run: |
-          AAR=$(find android/build -name "*-release.aar" | head -1)
+          AAR=$(find android/build/outputs/aar -name "*-release.aar" | head -1)
+          if [[ -z "$AAR" ]]; then
+            # Fall back to searching the whole build directory
+            AAR=$(find android/build -name "*-release.aar" | head -1)
+          fi
+          if [[ -z "$AAR" ]]; then
+            echo "ERROR: Release AAR not found"
+            exit 1
+          fi
           echo "Found: $AAR"
-          TAG=${{ github.ref_name }}
+          TAG="${{ github.ref_name }}"
           DEST="SwiftAndroidSDK-${TAG}.aar"
           cp "$AAR" "$DEST"
           echo "path=$DEST" >> $GITHUB_OUTPUT
@@ -184,24 +237,32 @@ jobs:
   # ── Create GitHub Release ────────────────────────────────────────────────────
   create-release:
     name: Create GitHub Release
-    needs: [build-xcframework, build-aar]
+    # Only the AAR is a hard requirement. XCFramework is best-effort (continue-on-error above).
+    needs: [build-aar, build-xcframework]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download XCFramework
-        uses: actions/download-artifact@v4
-        with:
-          name: xcframework
-          path: artifacts
-
-      - name: Download AAR
+      - name: Download AAR artifact
         uses: actions/download-artifact@v4
         with:
           name: aar
           path: artifacts
 
-      - name: Download checksum
+      - name: Download XCFramework artifact (if built)
+        # The xcframework job uses continue-on-error:true so the artifact may not exist.
+        # continue-on-error here prevents the release from failing when the XCFramework
+        # job failed due to the known Factory .swiftinterface upstream issue.
+        id: dl-xcf
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: xcframework
+          path: artifacts
+
+      - name: Download XCFramework checksum (if built)
+        id: dl-checksum
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: xcframework-checksum
@@ -209,7 +270,12 @@ jobs:
 
       - name: Read checksum
         id: checksum
-        run: echo "value=$(cat artifacts/xcframework.checksum)" >> $GITHUB_OUTPUT
+        run: |
+          if [[ -f artifacts/xcframework.checksum ]]; then
+            echo "value=$(cat artifacts/xcframework.checksum)" >> $GITHUB_OUTPUT
+          else
+            echo "value=not-built" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -220,29 +286,28 @@ jobs:
             ## SwiftAndroidSDK ${{ github.ref_name }}
 
             ### iOS — Swift Package Manager (source, recommended)
-            In `Package.swift`:
+            Add to `Package.swift`:
             ```swift
-            .package(url: "https://github.com/YOUR_ORG/SwiftAndroidSDK", from: "${{ github.ref_name }}")
+            .package(url: "https://github.com/erikg84/SwiftAndroidSDK", from: "${{ github.ref_name }}")
             ```
 
-            ### iOS — Binary XCFramework
+            ### iOS — Binary XCFramework (if available in this release)
             ```swift
             .binaryTarget(
                 name: "SwiftAndroidSDK",
-                url: "https://github.com/YOUR_ORG/SwiftAndroidSDK/releases/download/${{ github.ref_name }}/SwiftAndroidSDK.xcframework.zip",
+                url: "https://github.com/erikg84/SwiftAndroidSDK/releases/download/${{ github.ref_name }}/SwiftAndroidSDK.xcframework.zip",
                 checksum: "${{ steps.checksum.outputs.value }}"
             )
             ```
 
-            ### Android — Gradle
+            ### Android — Gradle (AAR via local file)
+            Copy `SwiftAndroidSDK-${{ github.ref_name }}.aar` from this release into your `app/libs/` folder, then:
             ```groovy
-            implementation 'YOUR_ORG:SwiftAndroidSDK:${{ github.ref_name }}'
-            ```
-            Or add the AAR from this release directly:
-            ```groovy
-            implementation files('libs/SwiftAndroidSDK-${{ github.ref_name }}.aar')
+            dependencies {
+                implementation fileTree(dir: 'libs', include: ['*.aar'])
+            }
             ```
           files: |
-            artifacts/SwiftAndroidSDK.xcframework.zip
-            artifacts/SwiftAndroidSDK-${{ github.ref_name }}.aar
+            artifacts/*.aar
+            artifacts/*.zip
           generate_release_notes: true

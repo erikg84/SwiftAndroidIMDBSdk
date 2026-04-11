@@ -18,14 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      - name: Select Xcode (latest Xcode 16 on runner)
+        # Use the highest available Xcode 16.x rather than a hardcoded minor version.
+        # Swift 6.3 ships with Xcode 16.3+.
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          if [[ -z "$XCODE" ]]; then
+            echo "No Xcode 16.x found; using runner default"
+          else
+            echo "Using $XCODE"
+            sudo xcode-select -s "$XCODE/Contents/Developer"
+          fi
+          swift --version
 
       - name: Build
         run: swift build -c release
 
-      - name: Test
-        run: swift test
+      - name: Test (parallel)
+        run: swift test --parallel
 
   # ── Validate android/Package.swift resolves ──────────────────────────────────
   validate-android-manifest:
@@ -34,18 +44,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Swift toolchain
+      - name: Cache Swift 6.3 toolchain
         uses: actions/cache@v4
         with:
           path: /tmp/swift-6.3
-          key: swift-6.3-ubuntu24
+          key: swift-6.3-ubuntu24-${{ runner.arch }}
 
       - name: Install Swift 6.3
         run: |
-          if [ ! -d /tmp/swift-6.3 ]; then
+          if [ ! -d /tmp/swift-6.3/usr/bin/swift ]; then
             curl -fsSL "https://download.swift.org/swift-6.3-release/ubuntu2404/swift-6.3-RELEASE/swift-6.3-RELEASE-ubuntu24.04.tar.gz" -o /tmp/swift.tar.gz
             mkdir -p /tmp/swift-6.3
             tar xzf /tmp/swift.tar.gz -C /tmp/swift-6.3 --strip-components=1
+            rm /tmp/swift.tar.gz
           fi
           echo "/tmp/swift-6.3/usr/bin" >> $GITHUB_PATH
 
