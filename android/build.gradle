@@ -39,9 +39,16 @@ android {
     }
 }
 
-// swift-java support library (published locally via bootstrap step).
+// swift-java support library — published to GitHub Packages by the
+// release workflow's "Publish swiftkit-core to GitHub Packages" step.
+//
+// Declared as `api` (not `implementation`) because the JExtract-generated
+// Java types in this AAR expose `org.swift.swiftkit.core.SwiftArena`,
+// `org.swift.swiftkit.core.JNISwiftInstance`, etc. in their public API.
+// Without `api`, consumers get "Cannot access class
+// 'org.swift.swiftkit.core.SwiftArena'" at compile time.
 dependencies {
-    implementation 'org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT'
+    api 'org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT'
 }
 
 // ---------------------------------------------------------------------------

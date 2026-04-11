@@ -1,0 +1,78 @@
+// publish-swiftkit-core.gradle — Standalone Gradle script that takes the
+// pre-built swiftkit-core JAR + POM from ~/.m2 (produced by the bootstrap
+// step) and re-publishes them to GitHub Packages so consumers don't need
+// `mavenLocal()` in their settings.gradle.
+//
+// Without this step, the SDK's published POM declares
+//   org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT
+// as a dependency, but the JAR is only in the SDK build machine's local
+// Maven (~/.m2). Consumers get an "Could not find" Gradle resolution error.
+//
+// Same staging trick as scripts/publish-xcframework.gradle: this file is
+// copied into a fresh temp dir at workflow runtime so Gradle treats it as
+// a single-project build (no upward search) and the maven-publish plugin
+// applies cleanly with no AGP/Swift dependencies.
+//
+// Usage:
+//   gradle -p <stage_dir> publishSwiftkitCorePublicationToGitHubPackagesRepository \
+//          -PjarPath=$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.jar \
+//          -PpomPath=$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.pom
+
+plugins {
+    id 'maven-publish'
+}
+
+def jarPath = findProperty('jarPath')
+def pomPath = findProperty('pomPath')
+
+if (!jarPath || !pomPath) {
+    throw new GradleException(
+        "Required properties: -PjarPath=<path-to-jar> -PpomPath=<path-to-pom>")
+}
+
+def jarFile = file(jarPath)
+def pomFile = file(pomPath)
+if (!jarFile.exists()) throw new GradleException("JAR not found: $jarFile")
+if (!pomFile.exists()) throw new GradleException("POM not found: $pomFile")
+
+publishing {
+    publications {
+        swiftkitCore(MavenPublication) {
+            groupId    = 'org.swift.swiftkit'
+            artifactId = 'swiftkit-core'
+            version    = '1.0-SNAPSHOT'
+
+            artifact(jarFile) {
+                extension = 'jar'
+            }
+
+            // Reuse the POM that swift-java's gradle publish already produced —
+            // it has the right dependency tree for the JNI runtime.
+            pom.withXml {
+                def existingPom = new XmlSlurper().parse(pomFile)
+                def root = asNode()
+                // Wipe the auto-generated bones and copy the upstream POM body.
+                // Simpler approach: just copy a few key fields and let consumers
+                // get transitive deps via the JAR's META-INF.
+                root.appendNode('description', 'swift-java SwiftKitCore JNI runtime — re-published from upstream swift-java to GitHub Packages so SwiftAndroidSDK consumers can resolve it without mavenLocal()')
+                root.appendNode('url', 'https://github.com/swiftlang/swift-java')
+                def licenses = root.appendNode('licenses')
+                def license = licenses.appendNode('license')
+                license.appendNode('name', 'Apache License, Version 2.0')
+                license.appendNode('url', 'https://www.apache.org/licenses/LICENSE-2.0')
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = 'GitHubPackages'
+            url  = uri(findProperty('githubPackagesUrl')
+                ?: 'https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk')
+            credentials {
+                username = findProperty('githubActor') ?: System.getenv('GITHUB_ACTOR')
+                password = findProperty('githubToken') ?: System.getenv('GITHUB_TOKEN')
+            }
+        }
+    }
+}

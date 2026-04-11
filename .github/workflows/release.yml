@@ -167,6 +167,57 @@ jobs:
           echo "Verifying swiftkit-core in ~/.m2:"
           ls -la "$MARKER" || { echo "ERROR: bootstrap did not produce $MARKER"; exit 1; }
 
+      - name: Publish swiftkit-core to GitHub Packages
+        # Without this, the SDK's published POM declares
+        # `org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT` as a runtime dep
+        # but consumers can't resolve it (it lives only in this runner's
+        # local Maven). Re-publish the JAR + POM to GH Packages so any
+        # consumer adding the SwiftAndroidIMDBSdk Maven repo gets it
+        # transitively without needing `mavenLocal()`.
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash --noprofile --norc {0}
+        run: |
+          set +e
+          set -uo pipefail
+          JDK17="$(/usr/libexec/java_home -v 17)"
+          export JAVA_HOME="$JDK17"
+          export PATH="$JDK17/bin:$PATH"
+
+          JAR="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.jar"
+          POM="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.pom"
+          if [[ ! -f "$JAR" ]]; then
+            echo "ERROR: swiftkit-core JAR not found at $JAR"
+            ls -la "$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/" 2>&1 || true
+            exit 1
+          fi
+
+          STAGE="$RUNNER_TEMP/swiftkit-pub"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp scripts/publish-swiftkit-core.gradle "$STAGE/build.gradle"
+          : > "$STAGE/settings.gradle"
+
+          LOG="$RUNNER_TEMP/publish-skc.log"
+          /opt/homebrew/bin/gradle \
+            -p "$STAGE" \
+            publishSwiftkitCorePublicationToGitHubPackagesRepository \
+            --no-daemon --stacktrace \
+            -PjarPath="$JAR" \
+            -PpomPath="$POM" 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          if [[ $STATUS -ne 0 ]]; then
+            if grep -q "status code 409" "$LOG"; then
+              # 1.0-SNAPSHOT is replaceable in normal Maven, but GitHub Packages
+              # treats it like a fixed version and returns 409. Idempotent skip
+              # — if the JAR is already up there, no action needed.
+              echo "::notice::swiftkit-core 1.0-SNAPSHOT already in GitHub Packages — skipping publish"
+              exit 0
+            fi
+            exit $STATUS
+          fi
+
       - name: Build Android AAR (assembleRelease)
         working-directory: android
         run: |
