@@ -46,8 +46,34 @@ final class _TMDBContainer: @unchecked Sendable {
         }.inObjectScope(.container)
 
         // ViewModel: container-scoped (cached). Same instance until reset.
+        // DEPRECATED — superseded by the per-screen viewmodels below.
         c.register(TMDBViewModel.self) { resolver in
             TMDBViewModel(repository: resolver.resolve((any TMDBRepository).self)!)
+        }.inObjectScope(.container)
+
+        // ── Per-screen viewmodels (v1.1.0+) ──────────────────────────────────
+        // Each viewmodel is a stateless command object that wraps a focused
+        // subset of the repository API. Container-scoped (singleton) — see
+        // PROPOSAL-shared-viewmodels.md §4.5 for the rationale.
+
+        c.register(TMDBHomeViewModel.self) { r in
+            TMDBHomeViewModel(repository: r.resolve((any TMDBRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(TMDBMoviesViewModel.self) { r in
+            TMDBMoviesViewModel(repository: r.resolve((any TMDBRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(TMDBTVShowsViewModel.self) { r in
+            TMDBTVShowsViewModel(repository: r.resolve((any TMDBRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(TMDBSearchViewModel.self) { r in
+            TMDBSearchViewModel(repository: r.resolve((any TMDBRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(TMDBTrendingViewModel.self) { r in
+            TMDBTrendingViewModel(repository: r.resolve((any TMDBRepository).self)!)
         }.inObjectScope(.container)
 
         self.container = c
@@ -65,8 +91,29 @@ final class _TMDBContainer: @unchecked Sendable {
     var repository: any TMDBRepository {
         resolver.resolve((any TMDBRepository).self)!
     }
+    /// Deprecated — superseded by the per-screen viewmodels below.
+    /// Compile-time warnings on the references to `TMDBViewModel` here are
+    /// expected; they go away when the type is removed in v2.0.0.
+    @available(*, deprecated, message: "Use per-screen viewmodels (homeViewModel etc.). Removed in v2.0.0.")
     var viewModel: TMDBViewModel {
         resolver.resolve(TMDBViewModel.self)!
+    }
+
+    // Per-screen viewmodels (v1.1.0+)
+    var homeViewModel: TMDBHomeViewModel {
+        resolver.resolve(TMDBHomeViewModel.self)!
+    }
+    var moviesViewModel: TMDBMoviesViewModel {
+        resolver.resolve(TMDBMoviesViewModel.self)!
+    }
+    var tvShowsViewModel: TMDBTVShowsViewModel {
+        resolver.resolve(TMDBTVShowsViewModel.self)!
+    }
+    var searchViewModel: TMDBSearchViewModel {
+        resolver.resolve(TMDBSearchViewModel.self)!
+    }
+    var trendingViewModel: TMDBTrendingViewModel {
+        resolver.resolve(TMDBTrendingViewModel.self)!
     }
 
     // ── Re-registration (used by configure() and test hooks) ────────────────
@@ -142,8 +189,71 @@ public final class TMDBContainer: @unchecked Sendable {
     public var repository: any TMDBRepository { _TMDBContainer.shared.repository }
 
     /// A ready-to-use ViewModel. Cached — same instance until `reset()`.
+    @available(*, deprecated, message: "TMDBViewModel is replaced by per-screen viewmodels (TMDBContainer.getHomeViewModel(), .getMoviesViewModel(), .getTVShowsViewModel(), .getSearchViewModel(), .getTrendingViewModel()). Will be removed in v2.0.0. See PROPOSAL-shared-viewmodels.md.")
     public var viewModel: TMDBViewModel { _TMDBContainer.shared.viewModel }
+
+    // ── Per-screen viewmodels (v1.1.0+) ──────────────────────────────────────
+    //
+    // Each accessor is a `static func` rather than a stored `static let` or
+    // instance `var` because JExtractSwiftPlugin only generates Java bindings
+    // for methods, not stored properties. Same reason `getShared()` exists.
+    // Iso-call-shape on iOS and Android:
+    //
+    //     iOS:     TMDBContainer.getHomeViewModel()  (or .shared.homeViewModel)
+    //     Android: TMDBContainer.getHomeViewModel()
+    //
+    // The instance also exposes typed `var` accessors for the iOS-only call
+    // style; both backends route through the same Swinject resolution.
+
+    /// Home screen viewmodel — trending media of all types.
+    public var homeViewModel: TMDBHomeViewModel { _TMDBContainer.shared.homeViewModel }
+
+    /// Movies tab viewmodel — popular movies.
+    public var moviesViewModel: TMDBMoviesViewModel { _TMDBContainer.shared.moviesViewModel }
+
+    /// TV Shows tab viewmodel — popular TV shows.
+    public var tvShowsViewModel: TMDBTVShowsViewModel { _TMDBContainer.shared.tvShowsViewModel }
+
+    /// Search screen viewmodel.
+    public var searchViewModel: TMDBSearchViewModel { _TMDBContainer.shared.searchViewModel }
+
+    /// Trending screen viewmodel — movies-only with day/week toggle.
+    public var trendingViewModel: TMDBTrendingViewModel { _TMDBContainer.shared.trendingViewModel }
 
     /// Reset all cached/singleton instances. Call in test `tearDown`.
     public func reset() { _TMDBContainer.shared.reset() }
+}
+
+// MARK: - Per-screen ViewModel static accessors (JExtract-friendly)
+
+extension TMDBContainer {
+    /// Returns the Home screen viewmodel — trending media of all types.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getHomeViewModel() -> TMDBHomeViewModel {
+        _TMDBContainer.shared.homeViewModel
+    }
+
+    /// Returns the Movies tab viewmodel — popular movies.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getMoviesViewModel() -> TMDBMoviesViewModel {
+        _TMDBContainer.shared.moviesViewModel
+    }
+
+    /// Returns the TV Shows tab viewmodel — popular TV shows.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getTVShowsViewModel() -> TMDBTVShowsViewModel {
+        _TMDBContainer.shared.tvShowsViewModel
+    }
+
+    /// Returns the Search screen viewmodel.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getSearchViewModel() -> TMDBSearchViewModel {
+        _TMDBContainer.shared.searchViewModel
+    }
+
+    /// Returns the Trending screen viewmodel — movies-only with day/week toggle.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getTrendingViewModel() -> TMDBTrendingViewModel {
+        _TMDBContainer.shared.trendingViewModel
+    }
 }

@@ -5,6 +5,18 @@ import Foundation
 /// Exposes five `async throws` methods — one per selected TMDB endpoint.
 /// On iOS, wrap calls in a `Task` from your `@Observable` or `ObservableObject`.
 /// On Android, swift-java bridges each `async` method to a `CompletableFuture`.
+///
+/// **Deprecated in v1.1.0** — superseded by per-screen viewmodels:
+/// - `TMDBHomeViewModel` for trending all
+/// - `TMDBMoviesViewModel` for popular movies
+/// - `TMDBTVShowsViewModel` for popular TV shows
+/// - `TMDBSearchViewModel` for search
+/// - `TMDBTrendingViewModel` for trending movies
+///
+/// Reach them via `TMDBContainer.getHomeViewModel()` (etc.) — same call shape
+/// on iOS and Android. See `PROPOSAL-shared-viewmodels.md` for the rationale.
+/// Will be removed in v2.0.0.
+@available(*, deprecated, message: "Use the per-screen viewmodels via TMDBContainer.get<Screen>ViewModel() (e.g. TMDBContainer.getHomeViewModel()). TMDBViewModel will be removed in v2.0.0. See PROPOSAL-shared-viewmodels.md for migration.")
 public final class TMDBViewModel: Sendable {
     private let repository: any TMDBRepository
 

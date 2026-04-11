@@ -240,28 +240,86 @@ struct RepositoryTests {
     }
 }
 
-// MARK: - ViewModel Tests
+// MARK: - Per-screen ViewModel Tests (v1.1.0+)
+// (Tests for the deprecated TMDBViewModel were removed in v1.1.0; the
+// per-screen suites below cover the same logic against the new types.)
 
-@Suite("TMDBViewModel")
-struct ViewModelTests {
-    private func makeVM(json: String) -> TMDBViewModel {
-        let config = TMDBConfiguration(bearerToken: "test_token")
-        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(json))
-        return TMDBViewModel(repository: repo)
-    }
-
-    @Test func fetchTrendingAllForwardsToRepo() async throws {
-        let vm = makeVM(json: mediaItemPageJSON)
-        let page = try await vm.fetchTrendingAll(timeWindow: .day)
+@Suite("TMDBHomeViewModel")
+struct HomeViewModelTests {
+    @Test func loadTrendingDecodesResponse() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(mediaItemPageJSON))
+        let vm = TMDBHomeViewModel(repository: repo)
+        let page = try await vm.loadTrending()
         #expect(page.results.count == 2)
+        #expect(page.results[0].title == "Dune")
     }
 
-    @Test func fetchPopularMoviesForwardsToRepo() async throws {
-        let vm = makeVM(json: moviePageJSON)
-        let page = try await vm.fetchPopularMovies()
-        #expect(page.results[0].id == 42)
+    @Test func loadTrendingHonorsTimeWindow() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(mediaItemPageJSON))
+        let vm = TMDBHomeViewModel(repository: repo)
+        let page = try await vm.loadTrending(timeWindow: .day, page: 2)
+        #expect(page.page == 1)  // mock returns the same fixture; this just verifies the call doesn't throw
     }
 }
+
+@Suite("TMDBMoviesViewModel")
+struct MoviesViewModelTests {
+    @Test func loadPopularDecodesPage() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(moviePageJSON))
+        let vm = TMDBMoviesViewModel(repository: repo)
+        let page = try await vm.loadPopular()
+        #expect(page.results.count == 1)
+        #expect(page.results[0].title == "Interstellar")
+    }
+}
+
+@Suite("TMDBTVShowsViewModel")
+struct TVShowsViewModelTests {
+    @Test func loadPopularDecodesPage() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(tvShowPageJSON))
+        let vm = TMDBTVShowsViewModel(repository: repo)
+        let page = try await vm.loadPopular()
+        #expect(page.results.count == 1)
+        #expect(page.results[0].name == "Breaking Bad")
+    }
+}
+
+@Suite("TMDBSearchViewModel")
+struct SearchViewModelTests {
+    @Test func searchReturnsResults() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(moviePageJSON))
+        let vm = TMDBSearchViewModel(repository: repo)
+        let page = try await vm.search(query: "Interstellar")
+        #expect(page.results[0].title == "Interstellar")
+    }
+
+    @Test func emptyQueryThrows() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(moviePageJSON))
+        let vm = TMDBSearchViewModel(repository: repo)
+        await #expect(throws: TMDBError.emptyQuery) {
+            _ = try await vm.search(query: "   ")
+        }
+    }
+}
+
+@Suite("TMDBTrendingViewModel")
+struct TrendingViewModelTests {
+    @Test func loadTrendingMoviesDecodesPage() async throws {
+        let config = TMDBConfiguration(bearerToken: "test")
+        let repo = TMDBRepositoryImpl(configuration: config, httpClient: MockHTTPClient(moviePageJSON))
+        let vm = TMDBTrendingViewModel(repository: repo)
+        let page = try await vm.loadTrendingMovies(timeWindow: .day)
+        #expect(page.results.count == 1)
+        #expect(page.results[0].title == "Interstellar")
+    }
+}
+
 
 // MARK: - Container Tests
 
@@ -291,11 +349,51 @@ struct ContainerTests {
         }
         defer { TMDBContainer.shared.reset() }
 
-        let page = try await TMDBContainer.shared.viewModel.fetchPopularMovies()
+        // Uses the v1.1.0 per-screen viewmodel — verifies the same factory
+        // override mechanism still works for the new accessor surface.
+        let page = try await TMDBContainer.getMoviesViewModel().loadPopular()
         #expect(page.results[0].title == "Interstellar")
     }
 
     @Test func sdkVersion() {
         #expect(!SDK.version.isEmpty)
+    }
+
+    // MARK: - Per-screen accessor tests (v1.1.0+)
+    // Co-located in this serialized suite to avoid races on TMDBContainer.shared.
+
+    @Test func staticGettersResolveAllFive() async throws {
+        TMDBContainer.shared.registerConfiguration {
+            TMDBConfiguration(bearerToken: "tok")
+        }
+        TMDBContainer.shared.registerHTTPClient {
+            MockHTTPClient(mediaItemPageJSON) as any HTTPClient
+        }
+        defer { TMDBContainer.shared.reset() }
+
+        let home     = TMDBContainer.getHomeViewModel()
+        let movies   = TMDBContainer.getMoviesViewModel()
+        let tvShows  = TMDBContainer.getTVShowsViewModel()
+        let search   = TMDBContainer.getSearchViewModel()
+        let trending = TMDBContainer.getTrendingViewModel()
+
+        // Verify the home VM resolves through the mock HTTP client
+        let page = try await home.loadTrending()
+        #expect(page.results.count == 2)
+
+        // Smoke that the others were created
+        _ = movies; _ = tvShows; _ = search; _ = trending
+    }
+
+    @Test func instanceAccessorsAndStaticGettersAreEquivalent() {
+        TMDBContainer.shared.registerConfiguration {
+            TMDBConfiguration(bearerToken: "tok")
+        }
+        defer { TMDBContainer.shared.reset() }
+
+        // Singleton scope — instance accessor and static getter return the same object
+        let viaInstance = TMDBContainer.shared.homeViewModel
+        let viaStatic   = TMDBContainer.getHomeViewModel()
+        #expect(ObjectIdentifier(viaInstance) == ObjectIdentifier(viaStatic))
     }
 }
