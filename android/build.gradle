@@ -112,6 +112,7 @@ def swiftRuntimeLibs = [
     'swiftSwiftOnoneSupport',
     'swiftDispatch',
     'Foundation',
+    'FoundationNetworking',
     'FoundationEssentials',
     'FoundationInternationalization',
     '_FoundationICU',
@@ -133,7 +134,7 @@ def buildSwiftAll = tasks.register('buildSwiftAll') {
 
     // JExtract generates Java wrappers here; Gradle picks them up via srcDir below.
     outputs.dir(layout.buildDirectory.dir(
-        '../.build/plugins/outputs/swiftandroidsdk/SwiftAndroidSDK/destination/JExtractSwiftPlugin/src/generated/java'))
+        '../.build/plugins/outputs/android/SwiftAndroidSDK/destination/JExtractSwiftPlugin/src/generated/java'))
 }
 
 abis.each { abi, info ->
