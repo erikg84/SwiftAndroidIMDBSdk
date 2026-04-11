@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# publish-local.sh — Build and publish both iOS XCFramework and Android AAR locally.
+# publish-local.sh — Validate iOS SPM package and publish Android AAR locally.
 #
-# Runs the iOS and Android builds in PARALLEL, waits for both, then prints
-# ready-to-paste consumer snippets for each platform.
+# Runs both platforms in PARALLEL, waits for both, then prints consumer snippets.
+#
+# iOS strategy:
+#   XCFramework binary creation requires BUILD_LIBRARY_FOR_DISTRIBUTION=YES on
+#   ALL transitive dependencies (including Factory). Factory 2.x has a known
+#   Swift 6.3 naming-conflict bug in its .swiftinterface (Factory<T> struct vs
+#   Factory module name) that causes archive failure. XCFramework builds are
+#   therefore deferred to GitHub Actions CI where the environment can be fully
+#   controlled. Locally we validate that the SPM source package builds cleanly
+#   and package the source tree — the primary iOS distribution is source-via-SPM.
+#
+# Android strategy:
+#   If swiftkit-core (the Java runtime from swift-java) is not yet published to
+#   Maven Local, it is bootstrapped automatically from the swift-java SPM checkout
+#   before the main Gradle build runs.
 #
 # Outputs (all under <repo-root>/build/local-publish/):
-#   ios/SwiftAndroidSDK.xcframework.zip     — XCFramework archive
-#   ios/SwiftAndroidSDK.xcframework.checksum — SHA-256 for Package.swift
-#   android/                               — Maven local-file repo layout
+#   ios/SwiftAndroidSDK-<version>-sources.zip  — Source zip for local SPM testing
+#   android/                                   — Maven local-file repo layout
 #     io/github/erikg84/swift-android-sdk/<version>/*.aar
 #
 # Usage:
@@ -58,62 +70,41 @@ fi
 
 mkdir -p "$IOS_OUT" "$ANDROID_OUT" "$LOG_DIR"
 
-# ─── iOS build (background) ──────────────────────────────────────────────────
-section "iOS — building XCFramework (background)"
+# ─── iOS — source validation + zip (background) ──────────────────────────────
+section "iOS — validating SPM package + creating source zip (background)"
 
 IOS_LOG="$LOG_DIR/ios-build.log"
-IOS_PID_FILE="$LOG_DIR/ios.pid"
 
 (
     set -euo pipefail
-    BUILD="$ROOT/build/xc"
-    rm -rf "$BUILD"
 
-    # SKIP_INSTALL=NO is required so the framework is copied into the archive.
-    # BUILD_LIBRARY_FOR_DISTRIBUTION is intentionally omitted: enabling it requires
-    # ALL dependencies (including Factory) to generate a .swiftinterface, but Factory
-    # has a known naming-conflict bug (Factory<T> struct vs Factory module) that fails
-    # verification in Swift 6.3. Without the flag, the XCFramework embeds .swiftmodule
-    # files instead — consumers must use a compatible Swift version, which is acceptable
-    # for a source-primary SDK where SPM is the recommended integration path.
-    XCBUILD_FLAGS=(
-        SKIP_INSTALL=NO
-    )
+    log "Building iOS/macOS package with swift build..." | tee "$IOS_LOG"
+    # swift build on the host validates the package compiles and all
+    # dependencies resolve. We target macOS (the host) since we don't have
+    # a cross-compile toolchain for iOS installed here.
+    cd "$ROOT"
+    swift build 2>&1 | tee -a "$IOS_LOG"
 
-    log "Archiving iOS device slice..." | tee -a "$IOS_LOG"
-    xcodebuild archive \
-        -scheme SwiftAndroidSDK \
-        -destination "generic/platform=iOS" \
-        -archivePath "$BUILD/SwiftAndroidSDK-iOS.xcarchive" \
-        "${XCBUILD_FLAGS[@]}" \
-        -quiet >> "$IOS_LOG" 2>&1
+    log "Running tests..." | tee -a "$IOS_LOG"
+    swift test --parallel 2>&1 | tee -a "$IOS_LOG"
 
-    log "Archiving iOS Simulator slice..." | tee -a "$IOS_LOG"
-    xcodebuild archive \
-        -scheme SwiftAndroidSDK \
-        -destination "generic/platform=iOS Simulator" \
-        -archivePath "$BUILD/SwiftAndroidSDK-iOS-Sim.xcarchive" \
-        "${XCBUILD_FLAGS[@]}" \
-        -quiet >> "$IOS_LOG" 2>&1
-
-    log "Creating XCFramework..." | tee -a "$IOS_LOG"
-    xcodebuild -create-xcframework \
-        -framework "$BUILD/SwiftAndroidSDK-iOS.xcarchive/Products/Library/Frameworks/SwiftAndroidSDK.framework" \
-        -framework "$BUILD/SwiftAndroidSDK-iOS-Sim.xcarchive/Products/Library/Frameworks/SwiftAndroidSDK.framework" \
-        -output "$BUILD/SwiftAndroidSDK.xcframework" >> "$IOS_LOG" 2>&1
-
-    ZIPNAME="SwiftAndroidSDK-$VERSION.xcframework.zip"
-    zip -qr "$IOS_OUT/$ZIPNAME" "$BUILD/SwiftAndroidSDK.xcframework"
+    log "Packaging source zip..." | tee -a "$IOS_LOG"
+    ZIPNAME="SwiftAndroidSDK-$VERSION-sources.zip"
+    cd "$ROOT"
+    zip -qr "$IOS_OUT/$ZIPNAME" \
+        Package.swift \
+        Sources/ \
+        --exclude "*.DS_Store" \
+        --exclude "*/.build/*"
     shasum -a 256 "$IOS_OUT/$ZIPNAME" | awk '{print $1}' > "$IOS_OUT/$ZIPNAME.sha256"
 
-    ok "XCFramework built → $IOS_OUT/$ZIPNAME" | tee -a "$IOS_LOG"
+    ok "iOS source package ready → $IOS_OUT/$ZIPNAME" | tee -a "$IOS_LOG"
 ) &
 IOS_PID=$!
-echo $IOS_PID > "$IOS_PID_FILE"
 log "iOS build started (PID $IOS_PID) — tail $IOS_LOG to watch"
 
 # ─── Android build (background) ──────────────────────────────────────────────
-section "Android — building AAR + publishing to local repo (background)"
+section "Android — bootstrapping + building AAR (background)"
 
 ANDROID_LOG="$LOG_DIR/android-build.log"
 ANDROID_PID_FILE="$LOG_DIR/android.pid"
@@ -121,6 +112,34 @@ ANDROID_PID_FILE="$LOG_DIR/android.pid"
 (
     set -euo pipefail
     cd "$ANDROID_DIR"
+
+    # ── Bootstrap swiftkit-core (swift-java Java runtime) ────────────────────
+    # swiftkit-core is the Java-side runtime for the JNI bridge. It is not yet
+    # published to Maven Central, so we must publish it to Maven Local from the
+    # swift-java SPM checkout on first use (one-time per machine).
+    SWIFTKIT_MARKER="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core"
+    if [[ ! -d "$SWIFTKIT_MARKER" ]]; then
+        log "Bootstrapping swiftkit-core → Maven Local (one-time setup)..." | tee -a "$ANDROID_LOG"
+        SWIFT_JAVA_DIR="$ANDROID_DIR/.build/checkouts/swift-java"
+        if [[ ! -f "$SWIFT_JAVA_DIR/gradlew" ]]; then
+            # Ensure swift-java is checked out by resolving SPM dependencies first
+            log "Resolving swift-java SPM dependency..." | tee -a "$ANDROID_LOG"
+            (cd "$ANDROID_DIR" && swift package resolve 2>&1 | tee -a "$ANDROID_LOG")
+        fi
+        if [[ -f "$SWIFT_JAVA_DIR/gradlew" ]]; then
+            (cd "$SWIFT_JAVA_DIR" && \
+                ./gradlew :SwiftKitCore:publishToMavenLocal \
+                    -PskipSamples=true \
+                    --no-daemon \
+                    2>&1 | tee -a "$ANDROID_LOG")
+            ok "swiftkit-core published to Maven Local" | tee -a "$ANDROID_LOG"
+        else
+            echo "⚠️  swift-java checkout not found — swiftkit-core bootstrap skipped" | tee -a "$ANDROID_LOG"
+            echo "   Run manually: cd android && swift package resolve && cd .build/checkouts/swift-java && ./gradlew :SwiftKitCore:publishToMavenLocal -PskipSamples=true" | tee -a "$ANDROID_LOG"
+        fi
+    else
+        log "swiftkit-core already in Maven Local — skipping bootstrap" | tee -a "$ANDROID_LOG"
+    fi
 
     # Update version in gradle.properties for this build
     sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=$VERSION/" gradle.properties
@@ -157,11 +176,12 @@ if [[ $IOS_STATUS -ne 0 ]]; then
     echo ""
     tail -30 "$IOS_LOG"
 else
-    ZIPNAME="SwiftAndroidSDK-$VERSION.xcframework.zip"
+    ZIPNAME="SwiftAndroidSDK-$VERSION-sources.zip"
     CHECKSUM=$(cat "$IOS_OUT/$ZIPNAME.sha256" 2>/dev/null || echo "<checksum unavailable>")
-    ok "iOS XCFramework"
+    ok "iOS source package"
     echo "   File:     $IOS_OUT/$ZIPNAME"
     echo "   Checksum: $CHECKSUM"
+    echo "   Note: XCFramework binary is built in CI (GitHub Actions release.yml)"
 fi
 
 echo ""
@@ -185,25 +205,24 @@ fi
 # ─── Consumer snippets ───────────────────────────────────────────────────────
 section "Consumer integration snippets"
 
-ZIPNAME="SwiftAndroidSDK-$VERSION.xcframework.zip"
+ZIPNAME="SwiftAndroidSDK-$VERSION-sources.zip"
 CHECKSUM=$(cat "$IOS_OUT/$ZIPNAME.sha256" 2>/dev/null || echo "<checksum>")
 
 cat <<EOF
 
-── iOS (Swift Package Manager) ─────────────────────────────────────────────
-
-  // Package.swift — binary distribution (pre-built XCFramework)
+── iOS (Swift Package Manager — source) ────────────────────────────────────
+  // Recommended: add via GitHub URL in Xcode or Package.swift
   .package(
       url: "https://github.com/erikg84/SwiftAndroidSdk",
       from: "$VERSION"
   )
 
-  // Or point at the local zip for testing:
-  .binaryTarget(
-      name: "SwiftAndroidSDK",
-      path: "$IOS_OUT/$ZIPNAME"
-  )
-  // Checksum: $CHECKSUM
+  // Local source zip for offline testing:
+  // Unzip $IOS_OUT/$ZIPNAME
+  // Then: .package(path: "/path/to/SwiftAndroidSDK")
+
+  // XCFramework binary: built by GitHub Actions on release tag.
+  // See .github/workflows/release.yml
 
 ── Android (Gradle) ─────────────────────────────────────────────────────────
 
@@ -211,6 +230,7 @@ cat <<EOF
   dependencyResolutionManagement {
       repositories {
           maven { url = uri("$ANDROID_OUT") }
+          mavenLocal()   // needed for swiftkit-core
           mavenCentral()
       }
   }
