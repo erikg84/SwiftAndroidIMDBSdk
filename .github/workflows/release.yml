@@ -188,18 +188,28 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [[ -x ./gradlew ]]; then
             GRADLE=./gradlew
           else
             GRADLE=/opt/homebrew/bin/gradle
           fi
+          LOG="$RUNNER_TEMP/publish-aar.log"
           # publishReleasePublicationToGitHubPackagesRepository is generated
           # by the maven-publish plugin from the GitHubPackages repo block in
           # android/build.gradle. The :release publication reuses the AAR that
           # assembleRelease just produced, so this is fast.
           $GRADLE publishReleasePublicationToGitHubPackagesRepository \
-            --no-daemon --stacktrace
+            --no-daemon --stacktrace 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          if [[ $STATUS -ne 0 ]] && grep -q "status code 409" "$LOG"; then
+            # GitHub Packages refuses to overwrite an existing Maven version.
+            # On a re-tag of the same version this is the correct end state,
+            # so swallow the 409 and proceed (idempotent publish).
+            echo "::notice::AAR version already exists in GitHub Packages — skipping publish"
+            exit 0
+          fi
+          exit $STATUS
 
       - name: Locate and rename AAR for upload
         id: aar
@@ -295,12 +305,21 @@ jobs:
           cp scripts/publish-xcframework.gradle "$STAGE/build.gradle"
           : > "$STAGE/settings.gradle"
 
+          LOG="$RUNNER_TEMP/publish-xcf.log"
+          set +e
           /opt/homebrew/bin/gradle \
             -p "$STAGE" \
             publishIosXcframeworkPublicationToGitHubPackagesRepository \
             --no-daemon --stacktrace \
             -PxcframeworkZip="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip" \
-            -PsdkVersion="$VERSION"
+            -PsdkVersion="$VERSION" 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [[ $STATUS -ne 0 ]] && grep -q "status code 409" "$LOG"; then
+            echo "::notice::XCFramework version already exists in GitHub Packages — skipping publish"
+            exit 0
+          fi
+          exit $STATUS
 
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v4
