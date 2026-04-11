@@ -402,6 +402,21 @@ Pin versions in `gradle.properties` or `gradle/libs.versions.toml`. As of writin
 
 The DI graph for the consumer app is split into modules by responsibility. The SDK viewmodels live in their own module since they need provider-function registration (third-party types from the AAR).
 
+**Why provider functions and not Koin's `viewModel { }` / `viewModelOf` DSL?**
+
+Koin's `viewModel { ... }` and `viewModelOf(::ConstructorRef)` DSL functions, and the `@KoinViewModel` annotation that wraps them, all have a compile-time type bound: the registered class must extend `androidx.lifecycle.ViewModel`. From [Koin source](https://github.com/InsertKoinIO/koin/blob/main/projects/core/koin-core-viewmodel/src/commonMain/kotlin/org/koin/core/module/dsl/ViewModelOf.kt):
+
+```kotlin
+import androidx.lifecycle.ViewModel
+inline fun <reified R : ViewModel> Module.viewModelOf(...)
+```
+
+The SDK's `HomeViewModel` (a JExtract-generated Java class extending swift-java's JNI base) does **not** extend `androidx.lifecycle.ViewModel`, and Java's single-inheritance rule means we can't make it. So `viewModel { TMDBContainer.getHomeViewModel() }` fails to compile with *"Type argument is not within its bounds: should be subtype of 'ViewModel'"*.
+
+The escape hatch is `@Single` / `@Factory` (or their DSL equivalents `single { }` / `factory { }`), which have no type bound. They accept any class. You lose `koinViewModel<T>()` integration in Compose but keep `koinInject<T>()` — see [§5.5](#55-replacing-hiltviewmodel-call-sites-in-compose) for Compose call patterns.
+
+**For app-side classes you own and that genuinely benefit from `androidx.lifecycle.ViewModel` features** (`viewModelScope`, `SavedStateHandle`), use `@KoinViewModel` and extend `ViewModel()` normally — see [§5.4](#54-replacing-hiltviewmodel-on-app-side-viewmodels). The two DI styles coexist in the same module structure.
+
 **`SdkModule.kt` — registers the five SDK viewmodels via provider functions:**
 
 ```kotlin
