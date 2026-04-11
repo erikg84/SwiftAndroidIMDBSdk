@@ -137,7 +137,11 @@ jobs:
         uses: actions/cache@v4
         id: sdk-cache
         with:
-          path: ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
+          # Cover both the old (~/.swiftpm/) and XDG (~/.local/share/org.swift.swiftpm/)
+          # paths — Swift 6.x on Linux uses the XDG location.
+          path: |
+            ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
+            ~/.local/share/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
           key: swift-android-sdk-6.3
 
       - name: Install Swift Android SDK
@@ -162,21 +166,26 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
 
       - name: Configure Swift Android SDK (link NDK headers)
-        # The internal bundle layout may vary across Swift releases.
-        # The official convention is swift-android/ as a direct child of the bundle,
-        # but we search dynamically to handle any structural differences on Linux.
+        # Search all common paths — Swift 6.x on Linux uses XDG (~/.local/share/org.swift.swiftpm/)
+        # rather than the legacy ~/.swiftpm/ path, so we discover dynamically.
         run: |
-          SETUP_SCRIPT=$(find ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle \
-            -name "setup-android-sdk.sh" -type f 2>/dev/null | head -1)
-          if [[ -z "$SETUP_SCRIPT" ]]; then
-            echo "ERROR: setup-android-sdk.sh not found. Bundle tree:"
-            find ~/.swiftpm/swift-sdks -maxdepth 5 -type d 2>/dev/null \
-              || echo "(~/.swiftpm/swift-sdks not found)"
+          BUNDLE=$(find "$HOME" -name "swift-6.3-RELEASE_android.artifactbundle" -type d 2>/dev/null | head -1)
+          if [[ -z "$BUNDLE" ]]; then
+            echo "ERROR: swift-6.3-RELEASE_android.artifactbundle not found under $HOME"
+            echo "Searching for any .artifactbundle directories..."
+            find "$HOME" -maxdepth 8 -type d -name "*.artifactbundle" 2>/dev/null || echo "(none found)"
+            echo "Swift SDK list:"; swift sdk list
             exit 1
           fi
-          SDK_DIR="$(dirname "$SETUP_SCRIPT")/.."
-          echo "Using SDK dir: $(realpath "$SDK_DIR")"
-          cd "$SDK_DIR" && ./scripts/setup-android-sdk.sh
+          echo "Bundle: $BUNDLE"
+          SETUP_SCRIPT=$(find "$BUNDLE" -name "setup-android-sdk.sh" -type f 2>/dev/null | head -1)
+          if [[ -z "$SETUP_SCRIPT" ]]; then
+            echo "ERROR: setup-android-sdk.sh not found in $BUNDLE"
+            find "$BUNDLE" -maxdepth 5 -type f -name "*.sh" 2>/dev/null
+            exit 1
+          fi
+          echo "Running: $SETUP_SCRIPT"
+          cd "$(dirname "$SETUP_SCRIPT")/.." && ./scripts/setup-android-sdk.sh
 
       - name: Cache Maven Local (swiftkit-core bootstrap)
         uses: actions/cache@v4
