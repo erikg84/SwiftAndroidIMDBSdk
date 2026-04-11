@@ -177,75 +177,70 @@ Run once per release: `git tag vX.Y.Z && git push origin vX.Y.Z`. Everything els
 
 ### Why do we need a separate auth mechanism for `update-spm-wrapper`?
 
-The default `GITHUB_TOKEN` injected into a workflow only has permissions on the **repo where the workflow runs**. To push to a different repo (the wrapper) we need a token that has `contents:write` on that other repo.
+The default `GITHUB_TOKEN` injected into a workflow only has permissions on the **repo where the workflow runs**. To push to a different repo (the wrapper) we need a token that has write access there.
 
-There are three reasonable ways to get one:
+There are four reasonable mechanisms. Comparing them:
 
-| Mechanism | Pros | Cons | Setup time |
-|---|---|---|---|
-| **GitHub App** *(what we use)* | Short-lived tokens (1h), fine-grained permissions, no expiring user PAT, no user account dependency | Can't be created via API — requires UI setup | ~5 min |
-| **Fine-grained PAT** | Simple, scoped to specific repo + permissions, no App installation | Tied to one user account, expires (max 1y) | ~2 min |
-| **Classic PAT** | Trivial | Account-wide scope, doesn't expire (security risk), feels dated | ~1 min |
+| Mechanism | Scriptable? | Scope | Expires? | Setup time |
+|---|---|---|---|---|
+| **SSH deploy key** *(what we use)* | ✅ via `gh api` | Single repo | No | ~30s |
+| **GitHub App** | ❌ creation requires UI form | Multi-repo, fine-grained perms | Tokens are short-lived | ~5 min |
+| **Fine-grained PAT** | ❌ creation requires UI form | Single repo, fine-grained perms | Yes (max 1y) | ~2 min |
+| **Classic PAT** | ❌ creation requires UI form | Account-wide | Optional | ~1 min |
 
-We default to the GitHub App. The fallback PAT path is documented in [Alternative: fine-grained PAT](#alternative-fine-grained-pat) below.
+We default to the **SSH deploy key**. It's the only mechanism that can be created entirely from the command line via `gh api`, it's scoped to exactly one repo (the wrapper), and it never expires. The tradeoff vs a GitHub App is that the deploy key grants write access to *the entire repo* — there's no per-path or per-permission slicing — but for a repo containing four files, that's not a meaningful distinction.
 
-### One-time GitHub App setup
+### One-time deploy key setup (one shell session, ~30 seconds)
 
-GitHub Apps cannot be created via the REST API (the `POST /orgs/{org}/apps` endpoint only exists for organizations). For a personal account you must use the web UI form.
-
-1. **Create the App**
-
-   Go to https://github.com/settings/apps/new and fill in:
-   - **GitHub App name**: `SwiftAndroidSDK SPM Wrapper Updater` (or any unique name)
-   - **Homepage URL**: `https://github.com/erikg84/SwiftAndroidIMDBSdk`
-   - **Webhook → Active**: untick (we don't need webhooks)
-   - **Repository permissions → Contents**: `Read and write`
-   - **Repository permissions → Metadata**: `Read-only` (auto-required)
-   - **Where can this GitHub App be installed?**: `Only on this account`
-
-   Click **Create GitHub App**. Copy the **App ID** from the resulting page (you'll need it for a workflow secret).
-
-2. **Generate a private key**
-
-   Scroll down to **Private keys → Generate a private key**. A `.pem` file downloads — keep it safe; you'll paste its contents into a secret in step 4.
-
-3. **Install the App on the wrapper repo**
-
-   On the App's settings page, click **Install App** in the left sidebar → **Install** next to your account → choose **Only select repositories** → pick `swift-android-idbm-sdk-spm` → **Install**.
-
-4. **Add secrets to the source repo**
-
-   ```bash
-   # From the SwiftAndroidIMDBSdk repo root:
-   gh secret set SPM_WRAPPER_APP_ID --body "<your-app-id>"
-   gh secret set SPM_WRAPPER_APP_PRIVATE_KEY < /path/to/downloaded-key.pem
-   ```
-
-   The workflow's `update-spm-wrapper` job uses [`actions/create-github-app-token@v3`](https://github.com/actions/create-github-app-token) to mint a fresh installation token from these two secrets at the start of every release run.
-
-That's the entire setup. From the next tag push onward, the workflow updates the wrapper repo automatically.
-
-### Alternative: fine-grained PAT
-
-If you don't want to set up a GitHub App, replace the `Mint GitHub App token` step with:
-
-```yaml
-- name: Use fine-grained PAT
-  id: app-token
-  run: echo "token=${{ secrets.WRAPPER_REPO_TOKEN }}" >> "$GITHUB_OUTPUT"
-```
-
-And create a fine-grained PAT at https://github.com/settings/personal-access-tokens/new:
-- **Repository access**: only `swift-android-idbm-sdk-spm`
-- **Permissions → Repository → Contents**: `Read and write`
-
-Store it as a repo secret:
+Run from any machine with `gh` authenticated and `repo` scope:
 
 ```bash
-gh secret set WRAPPER_REPO_TOKEN --body "<your-fgpat>"
+# 1. Generate an ed25519 keypair (no passphrase — workflow needs unattended access)
+ssh-keygen -t ed25519 -N "" \
+    -f /tmp/spm-wrapper-deploy \
+    -C "spm-wrapper-bot@swift-android-imdb-sdk"
+
+# 2. Register the public half on the wrapper repo as a write-enabled deploy key
+gh api -X POST repos/erikg84/swift-android-idbm-sdk-spm/keys \
+    -f title="release-workflow (write)" \
+    -f key="$(cat /tmp/spm-wrapper-deploy.pub)" \
+    -F read_only=false
+
+# 3. Store the private half as a secret in the source repo
+gh secret set SPM_WRAPPER_DEPLOY_KEY \
+    -R erikg84/SwiftAndroidIMDBSdk \
+    < /tmp/spm-wrapper-deploy
+
+# 4. Scrub the local copies — the only authoritative copy is now in repo secrets
+shred -uz /tmp/spm-wrapper-deploy 2>/dev/null || rm -P /tmp/spm-wrapper-deploy
+rm -f /tmp/spm-wrapper-deploy.pub
 ```
 
-The fine-grained PAT max expiration is 1 year — note when to rotate.
+That's the entire setup. The `update-spm-wrapper` job uses [`webfactory/ssh-agent@v0.9.0`](https://github.com/webfactory/ssh-agent) to load the private key into the runner's SSH agent at the start of the run, then clones / commits / pushes via `git@github.com:...` URLs as you normally would.
+
+### Rotating the deploy key
+
+If you ever need to rotate (e.g. suspected compromise):
+
+```bash
+# Find the existing key id
+gh api repos/erikg84/swift-android-idbm-sdk-spm/keys \
+    --jq '.[] | select(.title=="release-workflow (write)") | .id'
+
+# Delete it
+gh api -X DELETE repos/erikg84/swift-android-idbm-sdk-spm/keys/<id>
+
+# Then re-run the four steps above to generate + register a fresh key.
+```
+
+### Alternative: GitHub App or fine-grained PAT
+
+If you'd rather use a GitHub App for granular permissions, or a fine-grained PAT for simpler conceptual model:
+
+- **GitHub App**: Create at https://github.com/settings/apps/new, set Repository permissions → Contents: Read and write, generate a private key, install it on the wrapper repo. Store `SPM_WRAPPER_APP_ID` and `SPM_WRAPPER_APP_PRIVATE_KEY` as secrets, and replace the SSH agent step in the workflow with [`actions/create-github-app-token@v3`](https://github.com/actions/create-github-app-token).
+- **Fine-grained PAT**: Create at https://github.com/settings/personal-access-tokens/new with Repository access limited to `swift-android-idbm-sdk-spm` and Contents: Read and write. Store as `WRAPPER_REPO_TOKEN` and clone via `https://x-access-token:${{ secrets.WRAPPER_REPO_TOKEN }}@github.com/...` in the workflow.
+
+Both require web UI clicks for creation. Both work fine. The deploy key path is just the only one that's fully `gh api` -scriptable.
 
 ---
 

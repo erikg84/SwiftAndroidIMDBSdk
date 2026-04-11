@@ -427,22 +427,16 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      # Mint a short-lived installation token from the GitHub App that has
-      # contents:write on the wrapper repo. The App ID and base64-encoded
-      # private key live in this repo's secrets — see DISTRIBUTION.md for
-      # the one-time setup.
-      #
-      # If you'd rather use a fine-grained PAT (simpler, no App needed),
-      # comment out this step and use a `WRAPPER_REPO_TOKEN` repo secret
-      # instead — see the alternative in DISTRIBUTION.md#alternative-fgpat.
-      - name: Mint GitHub App token for wrapper repo
-        id: app-token
-        uses: actions/create-github-app-token@v3
+      # Cross-repo write auth uses an SSH deploy key registered on the wrapper
+      # repo with read_only=false. The private key lives in this repo's
+      # secrets as SPM_WRAPPER_DEPLOY_KEY. We chose deploy keys over a
+      # GitHub App because they're 100% scriptable via `gh api` (no UI form),
+      # scoped to exactly one repo, and don't expire. See DISTRIBUTION.md
+      # for the one-time setup commands.
+      - name: Configure SSH agent with deploy key
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          app-id: ${{ secrets.SPM_WRAPPER_APP_ID }}
-          private-key: ${{ secrets.SPM_WRAPPER_APP_PRIVATE_KEY }}
-          owner: erikg84
-          repositories: swift-android-idbm-sdk-spm
+          ssh-private-key: ${{ secrets.SPM_WRAPPER_DEPLOY_KEY }}
 
       - name: Download XCFramework artifact
         uses: actions/download-artifact@v4
@@ -460,11 +454,9 @@ jobs:
           echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
           echo "Tag: $REF → version $VERSION, checksum $CHECKSUM"
 
-      - name: Clone wrapper repo
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Clone wrapper repo (ssh)
         run: |
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/erikg84/swift-android-idbm-sdk-spm.git" wrapper
+          git clone git@github.com:erikg84/swift-android-idbm-sdk-spm.git wrapper
           cd wrapper
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
