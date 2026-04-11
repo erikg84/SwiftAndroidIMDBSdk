@@ -385,15 +385,15 @@ struct ContainerTests {
         _ = movies; _ = tvShows; _ = search; _ = trending
     }
 
-    @Test func instanceAccessorsAndStaticGettersAreEquivalent() {
+    @Test func staticGettersAreSingletons() {
         TMDBContainer.shared.registerConfiguration {
             TMDBConfiguration(bearerToken: "tok")
         }
         defer { TMDBContainer.shared.reset() }
 
-        // Singleton scope — instance accessor and static getter return the same object
-        let viaInstance = TMDBContainer.shared.homeViewModel
-        let viaStatic   = TMDBContainer.getHomeViewModel()
-        #expect(ObjectIdentifier(viaInstance) == ObjectIdentifier(viaStatic))
+        // Singleton scope — repeated calls return the same object until reset.
+        let first  = TMDBContainer.getHomeViewModel()
+        let second = TMDBContainer.getHomeViewModel()
+        #expect(ObjectIdentifier(first) == ObjectIdentifier(second))
     }
 }

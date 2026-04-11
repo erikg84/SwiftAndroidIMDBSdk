@@ -192,34 +192,6 @@ public final class TMDBContainer: @unchecked Sendable {
     @available(*, deprecated, message: "TMDBViewModel is replaced by per-screen viewmodels (TMDBContainer.getHomeViewModel(), .getMoviesViewModel(), .getTVShowsViewModel(), .getSearchViewModel(), .getTrendingViewModel()). Will be removed in v2.0.0. See PROPOSAL-shared-viewmodels.md.")
     public var viewModel: TMDBViewModel { _TMDBContainer.shared.viewModel }
 
-    // ── Per-screen viewmodels (v1.1.0+) ──────────────────────────────────────
-    //
-    // Each accessor is a `static func` rather than a stored `static let` or
-    // instance `var` because JExtractSwiftPlugin only generates Java bindings
-    // for methods, not stored properties. Same reason `getShared()` exists.
-    // Iso-call-shape on iOS and Android:
-    //
-    //     iOS:     TMDBContainer.getHomeViewModel()  (or .shared.homeViewModel)
-    //     Android: TMDBContainer.getHomeViewModel()
-    //
-    // The instance also exposes typed `var` accessors for the iOS-only call
-    // style; both backends route through the same Swinject resolution.
-
-    /// Home screen viewmodel — trending media of all types.
-    public var homeViewModel: TMDBHomeViewModel { _TMDBContainer.shared.homeViewModel }
-
-    /// Movies tab viewmodel — popular movies.
-    public var moviesViewModel: TMDBMoviesViewModel { _TMDBContainer.shared.moviesViewModel }
-
-    /// TV Shows tab viewmodel — popular TV shows.
-    public var tvShowsViewModel: TMDBTVShowsViewModel { _TMDBContainer.shared.tvShowsViewModel }
-
-    /// Search screen viewmodel.
-    public var searchViewModel: TMDBSearchViewModel { _TMDBContainer.shared.searchViewModel }
-
-    /// Trending screen viewmodel — movies-only with day/week toggle.
-    public var trendingViewModel: TMDBTrendingViewModel { _TMDBContainer.shared.trendingViewModel }
-
     /// Reset all cached/singleton instances. Call in test `tearDown`.
     public func reset() { _TMDBContainer.shared.reset() }
 }
