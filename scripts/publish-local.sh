@@ -127,16 +127,35 @@ ANDROID_PID_FILE="$LOG_DIR/android.pid"
             (cd "$ANDROID_DIR" && swift package resolve 2>&1 | tee -a "$ANDROID_LOG")
         fi
         if [[ -f "$SWIFT_JAVA_DIR/gradlew" ]]; then
-            # swift-java hardcodes Java 25 in its build convention. If the installed
-            # JDK is older, patch the checkout (a throwaway .build directory) to use
-            # whatever major version `java -version` reports. The resulting JAR is
-            # functionally identical — the version gate is just a toolchain requirement.
+            # swift-java hardcodes Java 25 in TWO places:
+            #   1. BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts
+            #   2. SwiftKitCore/build.gradle.kts  (overrides the convention)
+            # Both must be patched. The checkout is a throwaway .build directory;
+            # the resulting JAR is functionally identical regardless of the JDK
+            # version used to compile it — the gate is only a toolchain requirement.
             JAVA_MAJOR=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
-            CONV_FILE="$SWIFT_JAVA_DIR/BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts"
-            if [[ -f "$CONV_FILE" ]] && grep -q "JavaLanguageVersion.of(25)" "$CONV_FILE" 2>/dev/null; then
-                log "Patching swift-java toolchain: Java 25 → $JAVA_MAJOR (your installed JDK)" | tee -a "$ANDROID_LOG"
-                sed -i.bak "s/JavaLanguageVersion.of(25)/JavaLanguageVersion.of($JAVA_MAJOR)/" "$CONV_FILE"
+            if [[ -z "$JAVA_MAJOR" ]]; then
+                JAVA_MAJOR=$(java -version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
             fi
+            log "Installed JDK: $JAVA_MAJOR — patching swift-java to use it" | tee -a "$ANDROID_LOG"
+
+            # Patch 1 — convention plugin
+            CONV_FILE="$SWIFT_JAVA_DIR/BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts"
+            if [[ -f "$CONV_FILE" ]]; then
+                sed -i.bak "s/JavaLanguageVersion\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CONV_FILE"
+            fi
+
+            # Patch 2 — SwiftKitCore direct toolchain override (wins over convention)
+            CORE_FILE="$SWIFT_JAVA_DIR/SwiftKitCore/build.gradle.kts"
+            if [[ -f "$CORE_FILE" ]]; then
+                sed -i.bak "s/JavaLanguageVersion\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CORE_FILE"
+            fi
+
+            # Clear stale BuildLogic compilation cache so Gradle picks up patches
+            rm -rf "$SWIFT_JAVA_DIR/BuildLogic/build"
+            rm -rf "$SWIFT_JAVA_DIR/.gradle"
+
+            log "Running SwiftKitCore:publishToMavenLocal..." | tee -a "$ANDROID_LOG"
             (cd "$SWIFT_JAVA_DIR" && \
                 ./gradlew :SwiftKitCore:publishToMavenLocal \
                     -PskipSamples=true \
