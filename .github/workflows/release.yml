@@ -30,8 +30,9 @@ permissions:
 # The hosted-runner version of this workflow used JDK 25 because swift-java
 # hardcodes that version in its build files. publish-local.sh works around it
 # by patching swift-java's hardcoded JavaLanguageVersion at bootstrap time, and
-# we use the same trick here. JDK 21 is then used for the actual Gradle build,
-# which is compatible with Gradle 8.11.1 and AGP 8.7.3.
+# we use the same trick here. JDK 17 is then used for the actual Gradle build —
+# it's compatible with Gradle 8.11.1 + AGP 8.7.3 and matches the JDK shipped
+# with current Android Studio, so consumers don't need a separate install.
 
 jobs:
   build-aar:
@@ -63,17 +64,18 @@ jobs:
           echo "── Android NDK ──"
           ls ~/Library/Android/sdk/ndk/ 2>/dev/null || true
 
-      - name: Configure environment (JDK 21 + Android NDK + Swift)
+      - name: Configure environment (JDK 17 + Android NDK + Swift)
         run: |
-          # JDK 21 (Corretto) — compatible with Gradle 8.11.1 + AGP 8.7.3
-          JDK21="$(/usr/libexec/java_home -v 21 2>/dev/null)"
-          if [[ -z "$JDK21" ]]; then
-            echo "ERROR: JDK 21 not found via java_home -v 21"
+          # JDK 17 (Microsoft OpenJDK) — compatible with Gradle 8.11.1 + AGP 8.7.3
+          # and matches the bundled JDK in current Android Studio releases.
+          JDK17="$(/usr/libexec/java_home -v 17 2>/dev/null)"
+          if [[ -z "$JDK17" ]]; then
+            echo "ERROR: JDK 17 not found via java_home -v 17"
             /usr/libexec/java_home -V 2>&1 || true
             exit 1
           fi
-          echo "JAVA_HOME=$JDK21" >> "$GITHUB_ENV"
-          echo "$JDK21/bin" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$JDK17" >> "$GITHUB_ENV"
+          echo "$JDK17/bin" >> "$GITHUB_PATH"
 
           # Android NDK — pick the highest installed version
           NDK_DIR=$(ls -d ~/Library/Android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)
@@ -297,10 +299,10 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          # JDK 21 — same toolchain the AAR job uses, compatible with Gradle 9
-          JDK21="$(/usr/libexec/java_home -v 21)"
-          export JAVA_HOME="$JDK21"
-          export PATH="$JDK21/bin:$PATH"
+          # JDK 17 — same toolchain the AAR job uses, compatible with Gradle 9
+          JDK17="$(/usr/libexec/java_home -v 17)"
+          export JAVA_HOME="$JDK17"
+          export PATH="$JDK17/bin:$PATH"
 
           VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
           echo "Publishing swift-android-sdk-ios:$VERSION"

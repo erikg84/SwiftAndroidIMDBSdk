@@ -123,6 +123,10 @@ public final class TMDBContainer: @unchecked Sendable {
     public static let shared = TMDBContainer()
     private init() {}
 
+    /// Returns the shared singleton — exposed as a static func so JExtractSwiftPlugin
+    /// generates a Java binding (stored `static let` properties are not bound by JExtract).
+    public static func getShared() -> TMDBContainer { shared }
+
     // ── Configuration ────────────────────────────────────────────────────────
 
     /// Configure TMDB credentials. Call once at app launch before any API call.
