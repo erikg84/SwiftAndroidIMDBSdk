@@ -5,6 +5,8 @@
 *.xcuserdata
 *.moved-aside
 DerivedData/
+# Top-level build output from publish-local.sh and xcodebuild archives
+build/
 
 # Android / Gradle
 android/.gradle/
