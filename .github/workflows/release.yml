@@ -216,7 +216,6 @@ jobs:
     name: Build XCFramework
     runs-on: [self-hosted, mac-studio]
     timeout-minutes: 60
-    continue-on-error: true   # Known upstream Factory .swiftinterface bug — XCFramework is best-effort
     steps:
       - uses: actions/checkout@v4
 
@@ -225,64 +224,35 @@ jobs:
           xcode-select -p
           xcodebuild -version
 
-      - name: Archive — iOS device
+      - name: Override version (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
         run: |
-          xcodebuild archive \
-            -scheme SwiftAndroidSDK \
-            -destination "generic/platform=iOS" \
-            -archivePath "$RUNNER_TEMP/ios.xcarchive" \
-            SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
+          sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=${{ inputs.version }}/" android/gradle.properties
+          rm -f android/gradle.properties.bak
 
-      - name: Archive — iOS Simulator
-        run: |
-          xcodebuild archive \
-            -scheme SwiftAndroidSDK \
-            -destination "generic/platform=iOS Simulator" \
-            -archivePath "$RUNNER_TEMP/ios-sim.xcarchive" \
-            SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
+      - name: Build XCFramework
+        # scripts/build-xcframework.sh archives each platform, reassembles a
+        # static framework from the .o files + DerivedData swiftmodule, and
+        # wraps the three frameworks with `xcodebuild -create-xcframework`.
+        # See the script header for why we don't use the SwiftPM scheme directly.
+        run: bash scripts/build-xcframework.sh "$RUNNER_TEMP/xcframework"
 
-      - name: Archive — macOS
-        run: |
-          xcodebuild archive \
-            -scheme SwiftAndroidSDK \
-            -destination "generic/platform=macOS" \
-            -archivePath "$RUNNER_TEMP/macos.xcarchive" \
-            SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO
-
-      - name: Create XCFramework
-        run: |
-          xcodebuild -create-xcframework \
-            -framework "$RUNNER_TEMP/ios.xcarchive/Products/usr/local/lib/SwiftAndroidSDK.framework" \
-            -framework "$RUNNER_TEMP/ios-sim.xcarchive/Products/usr/local/lib/SwiftAndroidSDK.framework" \
-            -framework "$RUNNER_TEMP/macos.xcarchive/Products/usr/local/lib/SwiftAndroidSDK.framework" \
-            -output "$RUNNER_TEMP/SwiftAndroidSDK.xcframework"
-
-      - name: Zip XCFramework
-        run: |
-          cd "$RUNNER_TEMP"
-          zip -r SwiftAndroidSDK.xcframework.zip SwiftAndroidSDK.xcframework
-
-      - name: Compute checksum
+      - name: Read checksum + tag
         id: checksum
         run: |
-          CHECKSUM=$(swift package compute-checksum "$RUNNER_TEMP/SwiftAndroidSDK.xcframework.zip" 2>/dev/null \
-            || shasum -a 256 "$RUNNER_TEMP/SwiftAndroidSDK.xcframework.zip" | awk '{print $1}')
+          CHECKSUM=$(cat "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256")
           echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
-          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework.checksum"
+          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework/xcframework.checksum"
+          ls -lh "$RUNNER_TEMP/xcframework/"
 
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v4
         with:
           name: xcframework
           path: |
-            ${{ runner.temp }}/SwiftAndroidSDK.xcframework.zip
-            ${{ runner.temp }}/xcframework.checksum
+            ${{ runner.temp }}/xcframework/SwiftAndroidSDK.xcframework.zip
+            ${{ runner.temp }}/xcframework/xcframework.checksum
+          if-no-files-found: error
 
   create-release:
     name: Create GitHub Release
@@ -328,7 +298,7 @@ jobs:
             .package(url: "https://github.com/erikg84/SwiftAndroidIMDBSdk", from: "${{ github.ref_name }}")
             ```
 
-            ### iOS — Binary XCFramework (best-effort artifact)
+            ### iOS — Binary XCFramework
             ```swift
             .binaryTarget(
                 name: "SwiftAndroidSDK",
