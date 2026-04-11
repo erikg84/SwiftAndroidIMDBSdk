@@ -187,8 +187,11 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Explicit shell — GitHub's default `bash -eo pipefail` would exit at
+        # the gradle failure before the 409 detection runs.
+        shell: bash --noprofile --norc {0}
         run: |
-          set -uo pipefail
+          set +e
           if [[ -x ./gradlew ]]; then
             GRADLE=./gradlew
           else
@@ -202,14 +205,16 @@ jobs:
           $GRADLE publishReleasePublicationToGitHubPackagesRepository \
             --no-daemon --stacktrace 2>&1 | tee "$LOG"
           STATUS=${PIPESTATUS[0]}
-          if [[ $STATUS -ne 0 ]] && grep -q "status code 409" "$LOG"; then
-            # GitHub Packages refuses to overwrite an existing Maven version.
-            # On a re-tag of the same version this is the correct end state,
-            # so swallow the 409 and proceed (idempotent publish).
-            echo "::notice::AAR version already exists in GitHub Packages — skipping publish"
-            exit 0
+          if [[ $STATUS -ne 0 ]]; then
+            if grep -q "status code 409" "$LOG"; then
+              # GitHub Packages refuses to overwrite an existing Maven version.
+              # On a re-tag of the same version this is the correct end state,
+              # so swallow the 409 and proceed (idempotent publish).
+              echo "::notice::AAR version already exists in GitHub Packages — skipping publish"
+              exit 0
+            fi
+            exit $STATUS
           fi
-          exit $STATUS
 
       - name: Locate and rename AAR for upload
         id: aar
@@ -287,8 +292,11 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Explicit shell — see notes on the AAR publish step above.
+        shell: bash --noprofile --norc {0}
         run: |
-          set -euo pipefail
+          set +e
+          set -uo pipefail
           # JDK 21 — same toolchain the AAR job uses, compatible with Gradle 9
           JDK21="$(/usr/libexec/java_home -v 21)"
           export JAVA_HOME="$JDK21"
