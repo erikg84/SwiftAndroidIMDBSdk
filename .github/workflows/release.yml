@@ -4,39 +4,226 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.2.0). Used as the GitHub Release tag if not already set.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
 
+# Self-hosted Mac Studio runner (ARM64, M1 Max, all Swift+Android toolchain
+# pre-installed). The runner is registered to this repo with labels:
+#   self-hosted, macOS, ARM64, mac-studio, swift-android
+#
+# Toolchain on the runner (verified 2026-04-10):
+#   - Swift 6.3 + Android SDK bundle (`swift sdk list` shows swift-6.3-RELEASE_android)
+#   - Android NDK 28.2.13676358 at ~/Library/Android/sdk/ndk/
+#   - JDK 17 (Microsoft) and JDK 21 (Corretto) at ~/Library/Java/JavaVirtualMachines/
+#   - Gradle (system, /opt/homebrew/bin/gradle)
+#   - Xcode 16.x for the iOS XCFramework job
+#
+# The hosted-runner version of this workflow used JDK 25 because swift-java
+# hardcodes that version in its build files. publish-local.sh works around it
+# by patching swift-java's hardcoded JavaLanguageVersion at bootstrap time, and
+# we use the same trick here. JDK 21 is then used for the actual Gradle build,
+# which is compatible with Gradle 8.11.1 and AGP 8.7.3.
+
 jobs:
-  # ── XCFramework (iOS + macOS) ────────────────────────────────────────────────
-  # NOTE: This job may fail due to a known upstream bug in Factory 2.x:
-  # With BUILD_LIBRARY_FOR_DISTRIBUTION=YES, Factory's .swiftinterface contains
-  # "extension Factory.Scope" where "Factory." is ambiguous between the module
-  # and the generic struct Factory<T>, causing interface verification to fail.
-  # SWIFT_VERIFY_EMITTED_MODULE_INTERFACE=NO suppresses verification of OUR
-  # generated interface but cannot suppress the error originating in Factory's
-  # own .swiftinterface. When Factory publishes a fix, remove this comment.
-  # The primary iOS distribution is SPM source — the XCFramework is a bonus.
+  build-aar:
+    name: Build Android AAR
+    runs-on: [self-hosted, mac-studio]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history if release.sh wants to compare against previous tags
+
+      - name: Inspect runner state
+        run: |
+          echo "── Runner ──"
+          echo "Hostname: $(hostname)"
+          echo "OS:       $(sw_vers -productName) $(sw_vers -productVersion)"
+          echo "Arch:     $(uname -m)"
+          echo
+          echo "── Java toolchains ──"
+          /usr/libexec/java_home -V 2>&1 || true
+          echo
+          echo "── Swift ──"
+          /opt/homebrew/bin/swift --version 2>&1 || swift --version || true
+          /opt/homebrew/bin/swift sdk list 2>&1 || swift sdk list || true
+          echo
+          echo "── Gradle ──"
+          /opt/homebrew/bin/gradle --version 2>&1 | head -5 || gradle --version | head -5 || true
+          echo
+          echo "── Android NDK ──"
+          ls ~/Library/Android/sdk/ndk/ 2>/dev/null || true
+
+      - name: Configure environment (JDK 21 + Android NDK + Swift)
+        run: |
+          # JDK 21 (Corretto) — compatible with Gradle 8.11.1 + AGP 8.7.3
+          JDK21="$(/usr/libexec/java_home -v 21 2>/dev/null)"
+          if [[ -z "$JDK21" ]]; then
+            echo "ERROR: JDK 21 not found via java_home -v 21"
+            /usr/libexec/java_home -V 2>&1 || true
+            exit 1
+          fi
+          echo "JAVA_HOME=$JDK21" >> "$GITHUB_ENV"
+          echo "$JDK21/bin" >> "$GITHUB_PATH"
+
+          # Android NDK — pick the highest installed version
+          NDK_DIR=$(ls -d ~/Library/Android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)
+          if [[ -n "$NDK_DIR" ]]; then
+            echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+            echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
+          fi
+
+          # Homebrew bin (gradle, swift, etc.) on PATH
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Swift Android SDK is installed on runner
+        run: |
+          if ! swift sdk list 2>&1 | grep -q 'swift-6.3-RELEASE_android'; then
+            echo "ERROR: swift-6.3-RELEASE_android SDK not installed on runner"
+            echo "Run on Mac Studio:"
+            echo "  swift sdk install https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz \\"
+            echo "    --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088"
+            exit 1
+          fi
+          swift sdk list
+
+      - name: Override version (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        run: |
+          sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=${{ inputs.version }}/" android/gradle.properties
+          rm -f android/gradle.properties.bak
+          echo "Overrode VERSION_NAME → ${{ inputs.version }}"
+          grep VERSION_NAME android/gradle.properties
+
+      - name: Resolve swift-java SPM dependency
+        working-directory: android
+        run: swift package resolve
+
+      - name: Bootstrap swiftkit-core → Maven Local (with JDK patching)
+        # swift-java's SwiftKitCore module hardcodes Java 25 in two places:
+        #   - BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts
+        #   - SwiftKitCore/build.gradle.kts (overrides the convention)
+        # The resulting JAR is functionally identical regardless of which JDK
+        # compiles it; the gate is only a toolchain requirement check. We patch
+        # both files to use the JDK we have (21) before invoking publishToMavenLocal.
+        # This is the same approach scripts/publish-local.sh uses locally.
+        run: |
+          set -euo pipefail
+          MARKER="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core"
+          if [[ -d "$MARKER" ]]; then
+            echo "swiftkit-core already in Maven Local — skipping bootstrap"
+            ls -la "$MARKER"
+            exit 0
+          fi
+
+          SWIFT_JAVA_DIR=$(find android/.build/checkouts -maxdepth 2 -name "swift-java*" -type d 2>/dev/null | head -1)
+          if [[ -z "$SWIFT_JAVA_DIR" ]]; then
+            echo "ERROR: swift-java checkout not found under android/.build/checkouts/"
+            find android/.build -maxdepth 4 -type d -name 'swift-java*' 2>/dev/null || true
+            exit 1
+          fi
+          echo "swift-java checkout: $SWIFT_JAVA_DIR"
+
+          JAVA_MAJOR=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
+          echo "Patching swift-java to use JDK $JAVA_MAJOR"
+
+          CONV="$SWIFT_JAVA_DIR/BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts"
+          if [[ -f "$CONV" ]]; then
+            sed -i.bak "s/JavaLanguageVersion\\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CONV"
+            grep JavaLanguageVersion "$CONV" || true
+          fi
+
+          CORE="$SWIFT_JAVA_DIR/SwiftKitCore/build.gradle.kts"
+          if [[ -f "$CORE" ]]; then
+            sed -i.bak "s/JavaLanguageVersion\\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CORE"
+            grep JavaLanguageVersion "$CORE" || true
+          fi
+
+          # Clear stale BuildLogic build cache so the patches actually apply
+          rm -rf "$SWIFT_JAVA_DIR/BuildLogic/build"
+          rm -rf "$SWIFT_JAVA_DIR/.gradle"
+
+          echo "Running :SwiftKitCore:publishToMavenLocal..."
+          (cd "$SWIFT_JAVA_DIR" && \
+              ./gradlew :SwiftKitCore:publishToMavenLocal \
+                  -PskipSamples=true \
+                  --no-daemon)
+
+          echo "Verifying swiftkit-core in ~/.m2:"
+          ls -la "$MARKER" || { echo "ERROR: bootstrap did not produce $MARKER"; exit 1; }
+
+      - name: Build Android AAR (assembleRelease)
+        working-directory: android
+        run: |
+          set -euo pipefail
+          # Use the project's gradle wrapper if it exists, else system gradle
+          if [[ -x ./gradlew ]]; then
+            GRADLE=./gradlew
+          else
+            GRADLE=/opt/homebrew/bin/gradle
+          fi
+          echo "Using: $GRADLE"
+          $GRADLE assembleRelease --no-daemon --stacktrace
+
+          AAR=$(find build/outputs/aar -name "*-release.aar" 2>/dev/null | head -1)
+          if [[ -z "$AAR" ]]; then
+            echo "ERROR: release AAR not found"
+            find build -name '*.aar' 2>/dev/null || true
+            exit 1
+          fi
+          echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
+
+      - name: Locate and rename AAR for upload
+        id: aar
+        run: |
+          AAR=$(find android/build/outputs/aar -name "*-release.aar" | head -1)
+          if [[ -z "$AAR" ]]; then
+            echo "ERROR: Release AAR not found after build"
+            exit 1
+          fi
+          # Tag (push) or workflow_dispatch input → file name
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == "main" || -z "$TAG" ]]; then
+            TAG="${{ inputs.version }}"
+            [[ -z "$TAG" ]] && TAG="dev-$(date +%Y%m%d-%H%M%S)"
+          fi
+          DEST="SwiftAndroidSDK-${TAG}.aar"
+          cp "$AAR" "$DEST"
+          shasum -a 256 "$DEST" > "${DEST}.sha256"
+          ls -lh "$DEST" "${DEST}.sha256"
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          echo "shasum_path=${DEST}.sha256" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aar
+          path: |
+            ${{ steps.aar.outputs.path }}
+            ${{ steps.aar.outputs.shasum_path }}
+          if-no-files-found: error
+
   build-xcframework:
     name: Build XCFramework
-    runs-on: macos-15
-    continue-on-error: true   # XCFramework is a best-effort artifact; SPM source is primary
+    runs-on: [self-hosted, mac-studio]
+    timeout-minutes: 60
+    continue-on-error: true   # Known upstream Factory .swiftinterface bug — XCFramework is best-effort
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode (latest Xcode 16.x on runner)
-        # Swift 6.3 requires Xcode 16.3+. Select the highest available Xcode 16.x
-        # rather than hardcoding a minor version that may not exist on the runner.
+      - name: Inspect Xcode
         run: |
-          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
-          if [[ -z "$XCODE" ]]; then
-            echo "No Xcode 16.x found; using runner default"
-          else
-            echo "Using $XCODE"
-            sudo xcode-select -s "$XCODE/Contents/Developer"
-          fi
-          swift --version
+          xcode-select -p
+          xcodebuild -version
 
       - name: Archive — iOS device
         run: |
@@ -84,184 +271,24 @@ jobs:
       - name: Compute checksum
         id: checksum
         run: |
-          CHECKSUM=$(swift package compute-checksum "$RUNNER_TEMP/SwiftAndroidSDK.xcframework.zip")
-          echo "value=$CHECKSUM" >> $GITHUB_OUTPUT
+          CHECKSUM=$(swift package compute-checksum "$RUNNER_TEMP/SwiftAndroidSDK.xcframework.zip" 2>/dev/null \
+            || shasum -a 256 "$RUNNER_TEMP/SwiftAndroidSDK.xcframework.zip" | awk '{print $1}')
+          echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework.checksum"
 
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v4
         with:
           name: xcframework
-          path: ${{ runner.temp }}/SwiftAndroidSDK.xcframework.zip
-
-      - name: Save checksum to file
-        run: echo "${{ steps.checksum.outputs.value }}" > "$RUNNER_TEMP/xcframework.checksum"
-
-      - name: Upload checksum file
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcframework-checksum
-          path: ${{ runner.temp }}/xcframework.checksum
-
-  # ── Android AAR ──────────────────────────────────────────────────────────────
-  build-aar:
-    name: Build Android AAR
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup JDK 25
-        # swift-java's swiftkit-core module requires JDK 25 to compile.
-        # Normal Gradle/Android builds fall back to the toolchain default.
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Cache Swift 6.3 toolchain
-        uses: actions/cache@v4
-        with:
-          path: /tmp/swift-6.3
-          key: swift-6.3-ubuntu24-${{ runner.arch }}
-
-      - name: Install Swift 6.3
-        run: |
-          if [ ! -d /tmp/swift-6.3/usr/bin/swift ]; then
-            curl -fsSL "https://download.swift.org/swift-6.3-release/ubuntu2404/swift-6.3-RELEASE/swift-6.3-RELEASE-ubuntu24.04.tar.gz" -o /tmp/swift.tar.gz
-            mkdir -p /tmp/swift-6.3
-            tar xzf /tmp/swift.tar.gz -C /tmp/swift-6.3 --strip-components=1
-            rm /tmp/swift.tar.gz
-          fi
-          echo "/tmp/swift-6.3/usr/bin" >> $GITHUB_PATH
-
-      - name: Cache Swift Android SDK bundle
-        uses: actions/cache@v4
-        id: sdk-cache
-        with:
-          # Cover both the old (~/.swiftpm/) and XDG (~/.local/share/org.swift.swiftpm/)
-          # paths — Swift 6.x on Linux uses the XDG location.
           path: |
-            ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
-            ~/.local/share/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle
-          key: swift-android-sdk-6.3
+            ${{ runner.temp }}/SwiftAndroidSDK.xcframework.zip
+            ${{ runner.temp }}/xcframework.checksum
 
-      - name: Install Swift Android SDK
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
-        run: |
-          swift sdk install \
-            "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
-            --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
-          # Verify the SDK was registered — fail loudly rather than silently continuing
-          swift sdk list | grep -q "swift-6.3-RELEASE_android" \
-            || { echo "ERROR: SDK not listed after install"; swift sdk list; exit 1; }
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: latest
-          accept-android-sdk-licenses: true
-
-      - name: Install NDK r27d
-        run: |
-          sdkmanager "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
-
-      - name: Configure Swift Android SDK (link NDK headers)
-        # Search all common paths — Swift 6.x on Linux uses XDG (~/.local/share/org.swift.swiftpm/)
-        # rather than the legacy ~/.swiftpm/ path, so we discover dynamically.
-        run: |
-          BUNDLE=$(find "$HOME" -name "swift-6.3-RELEASE_android.artifactbundle" -type d 2>/dev/null | head -1)
-          if [[ -z "$BUNDLE" ]]; then
-            echo "ERROR: swift-6.3-RELEASE_android.artifactbundle not found under $HOME"
-            echo "Searching for any .artifactbundle directories..."
-            find "$HOME" -maxdepth 8 -type d -name "*.artifactbundle" 2>/dev/null || echo "(none found)"
-            echo "Swift SDK list:"; swift sdk list
-            exit 1
-          fi
-          echo "Bundle: $BUNDLE"
-          SETUP_SCRIPT=$(find "$BUNDLE" -name "setup-android-sdk.sh" -type f 2>/dev/null | head -1)
-          if [[ -z "$SETUP_SCRIPT" ]]; then
-            echo "ERROR: setup-android-sdk.sh not found in $BUNDLE"
-            find "$BUNDLE" -maxdepth 5 -type f -name "*.sh" 2>/dev/null
-            exit 1
-          fi
-          echo "Running: $SETUP_SCRIPT"
-          cd "$(dirname "$SETUP_SCRIPT")/.." && ./scripts/setup-android-sdk.sh
-
-      - name: Cache Maven Local (swiftkit-core bootstrap)
-        uses: actions/cache@v4
-        id: m2-cache
-        with:
-          # Cache key includes android/Package.swift so any swift-java version bump
-          # busts the cache and forces a fresh bootstrap.
-          path: ~/.m2/repository/org/swift
-          key: swiftkit-core-${{ hashFiles('android/Package.swift') }}
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('android/build.gradle', 'android/settings.gradle') }}
-          restore-keys: gradle-
-
-      - name: Resolve Swift packages
-        working-directory: android
-        run: swift package resolve
-
-      - name: Bootstrap swiftkit-core → Maven Local
-        # swiftkit-core (the Java JNI runtime for swift-java) is not yet on Maven Central.
-        # We must build it from the swift-java checkout and publish to ~/.m2.
-        # Only the :SwiftKitCore subproject is needed; -PskipSamples=true avoids building
-        # the rest of the swift-java repo (which would pull in many more dependencies).
-        if: steps.m2-cache.outputs.cache-hit != 'true'
-        working-directory: android
-        run: |
-          SWIFT_JAVA_DIR=$(find .build/checkouts -maxdepth 1 -name "swift-java*" -type d | head -1)
-          if [[ -z "$SWIFT_JAVA_DIR" ]]; then
-            echo "ERROR: swift-java checkout not found under android/.build/checkouts/"
-            exit 1
-          fi
-          echo "Bootstrapping from: $SWIFT_JAVA_DIR"
-          cd "$SWIFT_JAVA_DIR"
-          ./gradlew :SwiftKitCore:publishToMavenLocal -PskipSamples=true --no-daemon
-
-      - name: Build AAR
-        working-directory: android
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-        run: ./gradlew assembleRelease --no-daemon
-
-      - name: Locate and rename AAR
-        id: aar
-        run: |
-          AAR=$(find android/build/outputs/aar -name "*-release.aar" | head -1)
-          if [[ -z "$AAR" ]]; then
-            # Fall back to searching the whole build directory
-            AAR=$(find android/build -name "*-release.aar" | head -1)
-          fi
-          if [[ -z "$AAR" ]]; then
-            echo "ERROR: Release AAR not found"
-            exit 1
-          fi
-          echo "Found: $AAR"
-          TAG="${{ github.ref_name }}"
-          DEST="SwiftAndroidSDK-${TAG}.aar"
-          cp "$AAR" "$DEST"
-          echo "path=$DEST" >> $GITHUB_OUTPUT
-
-      - name: Upload AAR artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: aar
-          path: ${{ steps.aar.outputs.path }}
-
-  # ── Create GitHub Release ────────────────────────────────────────────────────
   create-release:
     name: Create GitHub Release
-    # Only the AAR is a hard requirement. XCFramework is best-effort (continue-on-error above).
     needs: [build-aar, build-xcframework]
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest   # GitHub-hosted is fine here — no toolchain needed
     steps:
       - uses: actions/checkout@v4
 
@@ -271,10 +298,7 @@ jobs:
           name: aar
           path: artifacts
 
-      - name: Download XCFramework artifact (if built)
-        # The xcframework job uses continue-on-error:true so the artifact may not exist.
-        # continue-on-error here prevents the release from failing when the XCFramework
-        # job failed due to the known Factory .swiftinterface upstream issue.
+      - name: Download XCFramework artifact (if available)
         id: dl-xcf
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -282,21 +306,13 @@ jobs:
           name: xcframework
           path: artifacts
 
-      - name: Download XCFramework checksum (if built)
-        id: dl-checksum
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: xcframework-checksum
-          path: artifacts
-
-      - name: Read checksum
+      - name: Read XCFramework checksum (if built)
         id: checksum
         run: |
           if [[ -f artifacts/xcframework.checksum ]]; then
-            echo "value=$(cat artifacts/xcframework.checksum)" >> $GITHUB_OUTPUT
+            echo "value=$(cat artifacts/xcframework.checksum)" >> "$GITHUB_OUTPUT"
           else
-            echo "value=not-built" >> $GITHUB_OUTPUT
+            echo "value=not-built" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release
@@ -308,22 +324,21 @@ jobs:
             ## SwiftAndroidSDK ${{ github.ref_name }}
 
             ### iOS — Swift Package Manager (source, recommended)
-            Add to `Package.swift`:
             ```swift
-            .package(url: "https://github.com/erikg84/SwiftAndroidSDK", from: "${{ github.ref_name }}")
+            .package(url: "https://github.com/erikg84/SwiftAndroidIMDBSdk", from: "${{ github.ref_name }}")
             ```
 
-            ### iOS — Binary XCFramework (if available in this release)
+            ### iOS — Binary XCFramework (best-effort artifact)
             ```swift
             .binaryTarget(
                 name: "SwiftAndroidSDK",
-                url: "https://github.com/erikg84/SwiftAndroidSDK/releases/download/${{ github.ref_name }}/SwiftAndroidSDK.xcframework.zip",
+                url: "https://github.com/erikg84/SwiftAndroidIMDBSdk/releases/download/${{ github.ref_name }}/SwiftAndroidSDK.xcframework.zip",
                 checksum: "${{ steps.checksum.outputs.value }}"
             )
             ```
 
             ### Android — Gradle (AAR via local file)
-            Copy `SwiftAndroidSDK-${{ github.ref_name }}.aar` from this release into your `app/libs/` folder, then:
+            Copy the `.aar` from this release into your `app/libs/`, then:
             ```groovy
             dependencies {
                 implementation fileTree(dir: 'libs', include: ['*.aar'])
@@ -331,5 +346,6 @@ jobs:
             ```
           files: |
             artifacts/*.aar
+            artifacts/*.aar.sha256
             artifacts/*.zip
           generate_release_notes: true
