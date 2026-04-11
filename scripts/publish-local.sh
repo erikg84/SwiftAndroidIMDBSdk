@@ -127,6 +127,16 @@ ANDROID_PID_FILE="$LOG_DIR/android.pid"
             (cd "$ANDROID_DIR" && swift package resolve 2>&1 | tee -a "$ANDROID_LOG")
         fi
         if [[ -f "$SWIFT_JAVA_DIR/gradlew" ]]; then
+            # swift-java hardcodes Java 25 in its build convention. If the installed
+            # JDK is older, patch the checkout (a throwaway .build directory) to use
+            # whatever major version `java -version` reports. The resulting JAR is
+            # functionally identical — the version gate is just a toolchain requirement.
+            JAVA_MAJOR=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
+            CONV_FILE="$SWIFT_JAVA_DIR/BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts"
+            if [[ -f "$CONV_FILE" ]] && grep -q "JavaLanguageVersion.of(25)" "$CONV_FILE" 2>/dev/null; then
+                log "Patching swift-java toolchain: Java 25 → $JAVA_MAJOR (your installed JDK)" | tee -a "$ANDROID_LOG"
+                sed -i.bak "s/JavaLanguageVersion.of(25)/JavaLanguageVersion.of($JAVA_MAJOR)/" "$CONV_FILE"
+            fi
             (cd "$SWIFT_JAVA_DIR" && \
                 ./gradlew :SwiftKitCore:publishToMavenLocal \
                     -PskipSamples=true \
