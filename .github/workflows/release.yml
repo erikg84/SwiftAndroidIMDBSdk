@@ -127,9 +127,13 @@ jobs:
             exit 0
           fi
 
-          SWIFT_JAVA_DIR=$(find android/.build/checkouts -maxdepth 2 -name "swift-java*" -type d 2>/dev/null | head -1)
-          if [[ -z "$SWIFT_JAVA_DIR" ]]; then
-            echo "ERROR: swift-java checkout not found under android/.build/checkouts/"
+          # Match `swift-java` exactly — newer swift-java versions also pull
+          # in `swift-java-jni-core` as a separate Swift-only checkout, which
+          # has no gradlew. The bare `swift-java` dir is the one that ships
+          # SwiftKitCore + gradle build files.
+          SWIFT_JAVA_DIR=$(find android/.build/checkouts -maxdepth 2 -type d -name 'swift-java' 2>/dev/null | head -1)
+          if [[ -z "$SWIFT_JAVA_DIR" || ! -x "$SWIFT_JAVA_DIR/gradlew" ]]; then
+            echo "ERROR: swift-java checkout (with gradlew) not found under android/.build/checkouts/"
             find android/.build -maxdepth 4 -type d -name 'swift-java*' 2>/dev/null || true
             exit 1
           fi
