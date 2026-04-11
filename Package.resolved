@@ -1,13 +1,13 @@
 {
-  "originHash" : "3626c4f77fa3815201afb7c3b06a04fa7692a8d50d131674722965cc65d50a81",
+  "originHash" : "af2ef151df5fb4ecc8901aa387a3a4c4bda64de53a55cf9289bcd741f15a67f5",
   "pins" : [
     {
-      "identity" : "factory",
+      "identity" : "swinject",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/hmlongco/Factory",
+      "location" : "https://github.com/Swinject/Swinject.git",
       "state" : {
-        "revision" : "ccc898f21992ebc130bc04cc197460a5ae230bcf",
-        "version" : "2.5.3"
+        "revision" : "b685b549fe4d8ae265fc7a2f27d0789720425d69",
+        "version" : "2.10.0"
       }
     }
   ],

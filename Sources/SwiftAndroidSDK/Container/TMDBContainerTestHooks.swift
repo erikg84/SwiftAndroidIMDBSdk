@@ -25,17 +25,17 @@
 extension TMDBContainer {
     /// Override the TMDB configuration factory. Use in tests, reset after.
     public func registerConfiguration(_ factory: @Sendable @escaping () -> TMDBConfiguration) {
-        _TMDBContainer.shared.configuration.register(factory: factory)
+        _TMDBContainer.shared.registerConfiguration(factory)
     }
 
     /// Override the HTTP client factory. Use in tests to inject mock responses.
     public func registerHTTPClient(_ factory: @Sendable @escaping () -> any HTTPClient) {
-        _TMDBContainer.shared.httpClient.register(factory: factory)
+        _TMDBContainer.shared.registerHTTPClient(factory)
     }
 
     /// Override the repository factory. Use in tests to inject a full mock.
     public func registerRepository(_ factory: @Sendable @escaping () -> any TMDBRepository) {
-        _TMDBContainer.shared.repository.register(factory: factory)
+        _TMDBContainer.shared.registerRepository(factory)
     }
 }
 #endif

@@ -277,7 +277,7 @@ struct ContainerTests {
         }
         defer { TMDBContainer.shared.reset() }
 
-        let config = _TMDBContainer.shared.configuration()
+        let config = _TMDBContainer.shared.configuration
         #expect(config.bearerToken == "test_tok")
         #expect(config.apiKey == "test_key")
     }
