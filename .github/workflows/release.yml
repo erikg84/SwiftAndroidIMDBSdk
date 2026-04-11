@@ -146,6 +146,9 @@ jobs:
           swift sdk install \
             "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
             --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
+          # Verify the SDK was registered — fail loudly rather than silently continuing
+          swift sdk list | grep -q "swift-6.3-RELEASE_android" \
+            || { echo "ERROR: SDK not listed after install"; swift sdk list; exit 1; }
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -159,11 +162,21 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
 
       - name: Configure Swift Android SDK (link NDK headers)
-        # setup-android-sdk.sh creates symlinks from the Swift SDK bundle into the NDK.
-        # Must run after ANDROID_NDK_HOME is set; idempotent on re-runs.
+        # The internal bundle layout may vary across Swift releases.
+        # The official convention is swift-android/ as a direct child of the bundle,
+        # but we search dynamically to handle any structural differences on Linux.
         run: |
-          cd ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle/swift-android
-          ./scripts/setup-android-sdk.sh
+          SETUP_SCRIPT=$(find ~/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle \
+            -name "setup-android-sdk.sh" -type f 2>/dev/null | head -1)
+          if [[ -z "$SETUP_SCRIPT" ]]; then
+            echo "ERROR: setup-android-sdk.sh not found. Bundle tree:"
+            find ~/.swiftpm/swift-sdks -maxdepth 5 -type d 2>/dev/null \
+              || echo "(~/.swiftpm/swift-sdks not found)"
+            exit 1
+          fi
+          SDK_DIR="$(dirname "$SETUP_SCRIPT")/.."
+          echo "Using SDK dir: $(realpath "$SDK_DIR")"
+          cd "$SDK_DIR" && ./scripts/setup-android-sdk.sh
 
       - name: Cache Maven Local (swiftkit-core bootstrap)
         uses: actions/cache@v4
