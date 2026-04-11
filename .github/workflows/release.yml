@@ -265,6 +265,43 @@ jobs:
           echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework/xcframework.checksum"
           ls -lh "$RUNNER_TEMP/xcframework/"
 
+      - name: Publish XCFramework to GitHub Packages
+        # Mirrors the supabase-sdk pattern: KMP publishes per-target Maven
+        # artifacts (supabase-core-iosarm64, …) to GitHub Packages. Our project
+        # isn't KMP, so we publish a single fat artifact whose .zip contains
+        # ios-arm64, ios-arm64_x86_64-simulator and macos-arm64_x86_64.
+        #
+        # scripts/publish-xcframework.gradle is a standalone build file that
+        # only applies the maven-publish plugin — no AGP, no Swift toolchain —
+        # so it runs cleanly without bootstrapping swift-java.
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # JDK 21 — same toolchain the AAR job uses, compatible with Gradle 9
+          JDK21="$(/usr/libexec/java_home -v 21)"
+          export JAVA_HOME="$JDK21"
+          export PATH="$JDK21/bin:$PATH"
+
+          VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
+          echo "Publishing swift-android-sdk-ios:$VERSION"
+
+          # Stage the publish script in its own dir with an empty settings.gradle
+          # so Gradle treats it as a single-project build (no upward search).
+          STAGE="$RUNNER_TEMP/xcfpub"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp scripts/publish-xcframework.gradle "$STAGE/build.gradle"
+          : > "$STAGE/settings.gradle"
+
+          /opt/homebrew/bin/gradle \
+            -p "$STAGE" \
+            publishIosXcframeworkPublicationToGitHubPackagesRepository \
+            --no-daemon --stacktrace \
+            -PxcframeworkZip="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip" \
+            -PsdkVersion="$VERSION"
+
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v4
         with:
@@ -326,7 +363,7 @@ jobs:
             .package(url: "https://github.com/erikg84/SwiftAndroidIMDBSdk", from: "${{ github.ref_name }}")
             ```
 
-            ### iOS — Binary XCFramework
+            ### iOS — Binary XCFramework via SPM (release asset)
             ```swift
             .binaryTarget(
                 name: "SwiftAndroidSDK",
@@ -334,6 +371,16 @@ jobs:
                 checksum: "${{ steps.checksum.outputs.value }}"
             )
             ```
+
+            ### iOS — XCFramework via GitHub Packages (Gradle / KMP)
+            The XCFramework is also published as a Maven artifact for Gradle/KMP consumers:
+            ```groovy
+            dependencies {
+                // The .zip is fetched as a transitive resource — unzip it in your build.
+                implementation 'io.github.erikg84:swift-android-sdk-ios:${{ steps.ver.outputs.maven }}@zip'
+            }
+            ```
+            Coordinate: `io.github.erikg84:swift-android-sdk-ios:${{ steps.ver.outputs.maven }}` (classifier `xcframework`, packaging `zip`)
 
             ### Android — Gradle (GitHub Packages, recommended)
             Add the GitHub Packages Maven repo to your `settings.gradle` (or `build.gradle`):

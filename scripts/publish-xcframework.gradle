@@ -1,0 +1,98 @@
+// publish-xcframework.gradle — Standalone Gradle script that publishes the
+// pre-built SwiftAndroidSDK.xcframework.zip to GitHub Packages as a Maven
+// artifact, mirroring how Kotlin Multiplatform projects (e.g. supabase-sdk)
+// publish per-target iOS frameworks at coordinates like
+// `com.dallaslabs.sdk:supabase-core-iosarm64`.
+//
+// We use a single fat artifact `swift-android-sdk-ios` (zip packaging,
+// "xcframework" classifier) instead of per-arch artifacts because the
+// .xcframework already bundles ios-arm64, ios-arm64_x86_64-simulator and
+// macos-arm64_x86_64 internally.
+//
+// This file is intentionally separate from android/build.gradle so we don't
+// drag in the Android Gradle Plugin or the Swift cross-compilation tasks
+// when all we need to do is upload a zip.
+//
+// Usage:
+//   ./gradlew -b scripts/publish-xcframework.gradle \
+//             publishIosXcframeworkPublicationToGitHubPackagesRepository \
+//             -PxcframeworkZip=$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip \
+//             -PsdkVersion=1.0.0
+
+plugins {
+    id 'maven-publish'
+}
+
+def sdkGroupId    = findProperty('sdkGroupId')    ?: 'io.github.erikg84'
+def sdkArtifactId = findProperty('sdkArtifactId') ?: 'swift-android-sdk-ios'
+def sdkVersion    = findProperty('sdkVersion')    ?: '0.0.0-SNAPSHOT'
+def xcframeworkZip = findProperty('xcframeworkZip')
+
+if (!xcframeworkZip) {
+    throw new GradleException(
+        "Missing required property -PxcframeworkZip=<path-to-SwiftAndroidSDK.xcframework.zip>")
+}
+
+def xcfFile = file(xcframeworkZip)
+if (!xcfFile.exists()) {
+    throw new GradleException("XCFramework zip not found at: $xcfFile")
+}
+
+// Resolved sha256 of the zip — exposed in the POM description so consumers
+// can match it against the SPM .binaryTarget(checksum:) value.
+def sha256File = new File(xcfFile.parentFile, 'SwiftAndroidSDK.xcframework.sha256')
+def sha256 = sha256File.exists() ? sha256File.text.trim() : 'unknown'
+
+publishing {
+    publications {
+        iosXcframework(MavenPublication) {
+            groupId    = sdkGroupId
+            artifactId = sdkArtifactId
+            version    = sdkVersion
+
+            artifact(xcfFile) {
+                extension  = 'zip'
+                classifier = 'xcframework'
+            }
+
+            pom {
+                name        = 'SwiftAndroidSDK iOS XCFramework'
+                description = "Multi-platform XCFramework (ios-arm64, ios-arm64_x86_64-simulator, " +
+                              "macos-arm64_x86_64) for SwiftAndroidSDK. SHA-256: ${sha256}"
+                url         = 'https://github.com/erikg84/SwiftAndroidIMDBSdk'
+                packaging   = 'zip'
+
+                licenses {
+                    license {
+                        name = 'Apache License, Version 2.0'
+                        url  = 'https://www.apache.org/licenses/LICENSE-2.0'
+                    }
+                }
+                developers {
+                    developer {
+                        id    = 'erikg84'
+                        name  = 'Erik Gutierrez'
+                        email = 'erikgutierrez84@gmail.com'
+                    }
+                }
+                scm {
+                    connection          = 'scm:git:git://github.com/erikg84/SwiftAndroidIMDBSdk.git'
+                    developerConnection = 'scm:git:ssh://github.com:erikg84/SwiftAndroidIMDBSdk.git'
+                    url                 = 'https://github.com/erikg84/SwiftAndroidIMDBSdk'
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = 'GitHubPackages'
+            url  = uri(findProperty('githubPackagesUrl')
+                ?: 'https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk')
+            credentials {
+                username = findProperty('githubActor') ?: System.getenv('GITHUB_ACTOR')
+                password = findProperty('githubToken') ?: System.getenv('GITHUB_TOKEN')
+            }
+        }
+    }
+}
