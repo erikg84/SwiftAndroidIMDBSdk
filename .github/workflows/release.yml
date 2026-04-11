@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 # Self-hosted Mac Studio runner (ARM64, M1 Max, all Swift+Android toolchain
 # pre-installed). The runner is registered to this repo with labels:
@@ -181,6 +182,25 @@ jobs:
           fi
           echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
 
+      - name: Publish AAR to GitHub Packages
+        working-directory: android
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -x ./gradlew ]]; then
+            GRADLE=./gradlew
+          else
+            GRADLE=/opt/homebrew/bin/gradle
+          fi
+          # publishReleasePublicationToGitHubPackagesRepository is generated
+          # by the maven-publish plugin from the GitHubPackages repo block in
+          # android/build.gradle. The :release publication reuses the AAR that
+          # assembleRelease just produced, so this is fast.
+          $GRADLE publishReleasePublicationToGitHubPackagesRepository \
+            --no-daemon --stacktrace
+
       - name: Locate and rename AAR for upload
         id: aar
         run: |
@@ -285,6 +305,14 @@ jobs:
             echo "value=not-built" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Compute Maven version (strip leading v)
+        id: ver
+        run: |
+          REF="${{ github.ref_name }}"
+          MAVEN_VERSION="${REF#v}"
+          echo "maven=$MAVEN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $REF → Maven version: $MAVEN_VERSION"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -307,8 +335,31 @@ jobs:
             )
             ```
 
-            ### Android — Gradle (AAR via local file)
-            Copy the `.aar` from this release into your `app/libs/`, then:
+            ### Android — Gradle (GitHub Packages, recommended)
+            Add the GitHub Packages Maven repo to your `settings.gradle` (or `build.gradle`):
+            ```groovy
+            dependencyResolutionManagement {
+                repositories {
+                    maven {
+                        url = uri("https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk")
+                        credentials {
+                            username = settings.ext.find('gpr.user') ?: System.getenv('GITHUB_ACTOR')
+                            password = settings.ext.find('gpr.token') ?: System.getenv('GITHUB_TOKEN')
+                        }
+                    }
+                }
+            }
+            ```
+            Then in your module:
+            ```groovy
+            dependencies {
+                implementation 'io.github.erikg84:swift-android-sdk:${{ steps.ver.outputs.maven }}'
+            }
+            ```
+            > GitHub Packages requires authentication even for public packages — your token needs `read:packages` scope.
+
+            ### Android — Gradle (AAR via local file, fallback)
+            Or download `SwiftAndroidSDK-${{ github.ref_name }}.aar` from this release into `app/libs/`, then:
             ```groovy
             dependencies {
                 implementation fileTree(dir: 'libs', include: ['*.aar'])
