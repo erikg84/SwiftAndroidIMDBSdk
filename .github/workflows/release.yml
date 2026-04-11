@@ -185,13 +185,17 @@ jobs:
           export JAVA_HOME="$JDK17"
           export PATH="$JDK17/bin:$PATH"
 
-          JAR="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.jar"
-          POM="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT/swiftkit-core-1.0-SNAPSHOT.pom"
-          if [[ ! -f "$JAR" ]]; then
-            echo "ERROR: swiftkit-core JAR not found at $JAR"
-            ls -la "$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/" 2>&1 || true
+          # The bootstrap step published swiftkit-core to ~/.m2 with a
+          # timestamped SNAPSHOT jar (e.g. swiftkit-core-1.0-20260411.155000-1.jar).
+          # Find the actual file rather than assuming a fixed name.
+          SKC_DIR="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT"
+          JAR=$(ls -1t "$SKC_DIR"/swiftkit-core-1.0-*.jar 2>/dev/null | grep -v sources | grep -v javadoc | head -1)
+          if [[ -z "$JAR" || ! -f "$JAR" ]]; then
+            echo "ERROR: swiftkit-core JAR not found in $SKC_DIR"
+            ls -la "$SKC_DIR" 2>&1 || true
             exit 1
           fi
+          echo "Republishing $JAR"
 
           STAGE="$RUNNER_TEMP/swiftkit-pub"
           rm -rf "$STAGE"
@@ -204,8 +208,7 @@ jobs:
             -p "$STAGE" \
             publishSwiftkitCorePublicationToGitHubPackagesRepository \
             --no-daemon --stacktrace \
-            -PjarPath="$JAR" \
-            -PpomPath="$POM" 2>&1 | tee "$LOG"
+            -PjarPath="$JAR" 2>&1 | tee "$LOG"
           STATUS=${PIPESTATUS[0]}
           if [[ $STATUS -ne 0 ]]; then
             if grep -q "status code 409" "$LOG"; then
