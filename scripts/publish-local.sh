@@ -220,10 +220,11 @@ if [[ $ANDROID_STATUS -ne 0 ]]; then
     echo ""
     tail -30 "$ANDROID_LOG"
 else
-    AAR=$(find "$ANDROID_OUT" -name "*.aar" 2>/dev/null | head -1)
+    ANDROID_LOCAL_REPO="$ANDROID_DIR/build/local-repo"
+    AAR=$(find "$ANDROID_LOCAL_REPO" -name "*.aar" 2>/dev/null | head -1)
     ok "Android AAR"
-    echo "   Local repo: $ANDROID_OUT"
-    echo "   AAR:        ${AAR:-<not found>}"
+    echo "   Local Maven repo: $ANDROID_LOCAL_REPO"
+    echo "   AAR:              ${AAR:-<not found>}"
 fi
 
 # Bail if either failed
@@ -258,7 +259,7 @@ cat <<EOF
   // settings.gradle(.kts) — add local repo for testing
   dependencyResolutionManagement {
       repositories {
-          maven { url = uri("$ANDROID_OUT") }
+          maven { url = uri("$ANDROID_DIR/build/local-repo") }
           mavenLocal()   // needed for swiftkit-core
           mavenCentral()
       }
