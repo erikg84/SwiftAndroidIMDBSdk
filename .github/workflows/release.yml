@@ -278,14 +278,6 @@ jobs:
         # See the script header for why we don't use the SwiftPM scheme directly.
         run: bash scripts/build-xcframework.sh "$RUNNER_TEMP/xcframework"
 
-      - name: Read checksum + tag
-        id: checksum
-        run: |
-          CHECKSUM=$(cat "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256")
-          echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
-          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework/xcframework.checksum"
-          ls -lh "$RUNNER_TEMP/xcframework/"
-
       - name: Publish XCFramework to GitHub Packages
         # Mirrors the supabase-sdk pattern: KMP publishes per-target Maven
         # artifacts (supabase-core-iosarm64, …) to GitHub Packages. Our project
@@ -320,20 +312,46 @@ jobs:
           : > "$STAGE/settings.gradle"
 
           LOG="$RUNNER_TEMP/publish-xcf.log"
+          ZIP="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip"
           set +e
           /opt/homebrew/bin/gradle \
             -p "$STAGE" \
             publishIosXcframeworkPublicationToGitHubPackagesRepository \
             --no-daemon --stacktrace \
-            -PxcframeworkZip="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip" \
+            -PxcframeworkZip="$ZIP" \
             -PsdkVersion="$VERSION" 2>&1 | tee "$LOG"
           STATUS=${PIPESTATUS[0]}
           set -e
           if [[ $STATUS -ne 0 ]] && grep -q "status code 409" "$LOG"; then
-            echo "::notice::XCFramework version already exists in GitHub Packages — skipping publish"
+            # GitHub Packages already has v$VERSION. The local zip we just built
+            # is byte-different (xcodebuild output isn't reproducible) so we
+            # MUST replace the local copy with the canonical bytes already on
+            # GH Packages — otherwise the wrapper repo's Package.swift checksum
+            # will diverge from what consumers actually download.
+            EXISTING_URL="https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk/io/github/erikg84/swift-android-sdk-ios/$VERSION/swift-android-sdk-ios-$VERSION.zip"
+            echo "::notice::XCFramework v$VERSION already in GH Packages — replacing local zip with canonical bytes from $EXISTING_URL"
+            curl -fsSL \
+              -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -o "$ZIP" \
+              "$EXISTING_URL" || { echo "ERROR: failed to fetch canonical bytes"; exit 1; }
+            shasum -a 256 "$ZIP" | awk '{print $1}' > "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256"
+            echo "Canonical sha256: $(cat $RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256)"
             exit 0
           fi
           exit $STATUS
+
+      - name: Read checksum + tag
+        # MUST run AFTER publish — the publish step may have replaced the
+        # local zip with canonical bytes from GH Packages on a 409, in which
+        # case the .sha256 file holds the canonical sha. Reading before
+        # publish would write the stale (pre-409) sha into the artifact.
+        id: checksum
+        run: |
+          CHECKSUM=$(cat "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256")
+          echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework/xcframework.checksum"
+          ls -lh "$RUNNER_TEMP/xcframework/"
 
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v4
