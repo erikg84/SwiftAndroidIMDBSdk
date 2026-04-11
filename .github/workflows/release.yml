@@ -385,33 +385,17 @@ jobs:
           body: |
             ## SwiftAndroidSDK ${{ github.ref_name }}
 
-            ### iOS — Swift Package Manager (source, recommended)
+            ### iOS — Swift Package Manager (recommended)
+            One clean URL — SPM only clones the ~5KB wrapper repo, then downloads the
+            XCFramework from GitHub Packages. **One-time setup**: add a `~/.netrc` entry
+            for `maven.pkg.github.com` (see [DISTRIBUTION.md](https://github.com/erikg84/SwiftAndroidIMDBSdk/blob/main/DISTRIBUTION.md#one-time-consumer-setup)).
             ```swift
-            .package(url: "https://github.com/erikg84/SwiftAndroidIMDBSdk", from: "${{ github.ref_name }}")
+            .package(url: "https://github.com/erikg84/swift-android-idbm-sdk-spm", from: "${{ steps.ver.outputs.maven }}")
             ```
 
-            ### iOS — Binary XCFramework via SPM (release asset)
-            ```swift
-            .binaryTarget(
-                name: "SwiftAndroidSDK",
-                url: "https://github.com/erikg84/SwiftAndroidIMDBSdk/releases/download/${{ github.ref_name }}/SwiftAndroidSDK.xcframework.zip",
-                checksum: "${{ steps.checksum.outputs.value }}"
-            )
-            ```
-
-            ### iOS — XCFramework via GitHub Packages (Gradle / KMP)
-            The XCFramework is also published as a Maven artifact for Gradle/KMP consumers:
+            ### Android — Gradle (recommended)
             ```groovy
-            dependencies {
-                // The .zip is fetched as a transitive resource — unzip it in your build.
-                implementation 'io.github.erikg84:swift-android-sdk-ios:${{ steps.ver.outputs.maven }}@zip'
-            }
-            ```
-            Coordinate: `io.github.erikg84:swift-android-sdk-ios:${{ steps.ver.outputs.maven }}` (classifier `xcframework`, packaging `zip`)
-
-            ### Android — Gradle (GitHub Packages, recommended)
-            Add the GitHub Packages Maven repo to your `settings.gradle` (or `build.gradle`):
-            ```groovy
+            // settings.gradle — add the GitHub Packages Maven repo with read:packages auth
             dependencyResolutionManagement {
                 repositories {
                     maven {
@@ -423,24 +407,123 @@ jobs:
                     }
                 }
             }
-            ```
-            Then in your module:
-            ```groovy
+
+            // app/build.gradle
             dependencies {
                 implementation 'io.github.erikg84:swift-android-sdk:${{ steps.ver.outputs.maven }}'
             }
             ```
-            > GitHub Packages requires authentication even for public packages — your token needs `read:packages` scope.
 
-            ### Android — Gradle (AAR via local file, fallback)
-            Or download `SwiftAndroidSDK-${{ github.ref_name }}.aar` from this release into `app/libs/`, then:
-            ```groovy
-            dependencies {
-                implementation fileTree(dir: 'libs', include: ['*.aar'])
-            }
-            ```
+            See [DISTRIBUTION.md](https://github.com/erikg84/SwiftAndroidIMDBSdk/blob/main/DISTRIBUTION.md) for the full architecture and fallback options (release-asset XCFramework, raw AAR download).
           files: |
             artifacts/*.aar
             artifacts/*.aar.sha256
             artifacts/*.zip
           generate_release_notes: true
+
+  update-spm-wrapper:
+    name: Update SPM wrapper repo
+    needs: [build-aar, build-xcframework, create-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      # Mint a short-lived installation token from the GitHub App that has
+      # contents:write on the wrapper repo. The App ID and base64-encoded
+      # private key live in this repo's secrets — see DISTRIBUTION.md for
+      # the one-time setup.
+      #
+      # If you'd rather use a fine-grained PAT (simpler, no App needed),
+      # comment out this step and use a `WRAPPER_REPO_TOKEN` repo secret
+      # instead — see the alternative in DISTRIBUTION.md#alternative-fgpat.
+      - name: Mint GitHub App token for wrapper repo
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SPM_WRAPPER_APP_ID }}
+          private-key: ${{ secrets.SPM_WRAPPER_APP_PRIVATE_KEY }}
+          owner: erikg84
+          repositories: swift-android-idbm-sdk-spm
+
+      - name: Download XCFramework artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xcframework
+          path: artifacts
+
+      - name: Compute version + checksum
+        id: meta
+        run: |
+          REF="${{ github.ref_name }}"
+          VERSION="${REF#v}"
+          CHECKSUM=$(cat artifacts/xcframework.checksum)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "Tag: $REF → version $VERSION, checksum $CHECKSUM"
+
+      - name: Clone wrapper repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/erikg84/swift-android-idbm-sdk-spm.git" wrapper
+          cd wrapper
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Rewrite Package.swift with new version + checksum
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHECKSUM: ${{ steps.meta.outputs.checksum }}
+        run: |
+          cd wrapper
+          # Idempotent rewrite — match the existing url/checksum lines and
+          # replace, regardless of what version was there before. Anchored on
+          # the unique substring `swift-android-sdk-ios/` so we don't touch
+          # other parts of the file.
+          python3 - <<'PY'
+          import os, re, pathlib
+          ver = os.environ['VERSION']
+          chk = os.environ['CHECKSUM']
+          p = pathlib.Path('Package.swift')
+          src = p.read_text()
+          new_url = (
+              f'https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk/'
+              f'io/github/erikg84/swift-android-sdk-ios/{ver}/'
+              f'swift-android-sdk-ios-{ver}.zip'
+          )
+          src = re.sub(
+              r'url:\s*"https://maven\.pkg\.github\.com/[^"]*"',
+              f'url: "{new_url}"',
+              src,
+          )
+          src = re.sub(
+              r'checksum:\s*"[0-9a-f]{64}"',
+              f'checksum: "{chk}"',
+              src,
+          )
+          p.write_text(src)
+          print(p.read_text())
+          PY
+
+      - name: Commit, tag, push
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          cd wrapper
+          git add Package.swift
+          if git diff --cached --quiet; then
+            echo "::notice::Package.swift unchanged — skipping commit"
+          else
+            git commit -m "Bump to v${VERSION}
+
+          Auto-updated by SwiftAndroidIMDBSdk release workflow.
+          XCFramework: io.github.erikg84:swift-android-sdk-ios:${VERSION}"
+            git push origin main
+          fi
+
+          # Tag is independent of whether main moved (could be a re-publish).
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "::notice::Tag v${VERSION} already exists — skipping"
+          else
+            git tag -a "v${VERSION}" -m "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi

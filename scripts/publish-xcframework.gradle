@@ -1,13 +1,19 @@
 // publish-xcframework.gradle — Standalone Gradle script that publishes the
 // pre-built SwiftAndroidSDK.xcframework.zip to GitHub Packages as a Maven
-// artifact, mirroring how Kotlin Multiplatform projects (e.g. supabase-sdk)
-// publish per-target iOS frameworks at coordinates like
-// `com.dallaslabs.sdk:supabase-core-iosarm64`.
+// artifact, following the convention used by Touchlab's KMMBridge:
 //
-// We use a single fat artifact `swift-android-sdk-ios` (zip packaging,
-// "xcframework" classifier) instead of per-arch artifacts because the
-// .xcframework already bundles ios-arm64, ios-arm64_x86_64-simulator and
-// macos-arm64_x86_64 internally.
+//   <maven_url>/<groupId-with-slashes>/<artifactId>/<version>/<artifactId>-<version>.zip
+//
+// Reference: KMMBridge MavenPublishArtifactManager.kt builds the URL as
+//   "$url/$group/$kmmbridgeArtifactId/$version/$kmmbridgeArtifactId-$version.zip"
+// with a single MavenPublication that has `artifact(zipFile) { extension = "zip" }`
+// — no classifier. We publish a single fat artifact (`swift-android-sdk-ios`)
+// because the .xcframework already bundles ios-arm64, ios-arm64_x86_64-simulator,
+// and macos-arm64_x86_64 internally — there's nothing to split per-arch.
+//
+// The clean URL pattern (no classifier) matters because the SPM wrapper repo's
+// Package.swift binaryTarget points directly at this URL. SPM authenticates
+// via ~/.netrc (Xcode 13.3+ supports basic auth for binary targets).
 //
 // This file is intentionally separate from android/build.gradle so we don't
 // drag in the Android Gradle Plugin or the Swift cross-compilation tasks
@@ -50,9 +56,11 @@ publishing {
             artifactId = sdkArtifactId
             version    = sdkVersion
 
+            // No classifier — produces clean URL `<artifactId>-<version>.zip`
+            // matching the KMMBridge / Maven default convention. The SPM
+            // wrapper repo's Package.swift binaryTarget URL depends on this.
             artifact(xcfFile) {
-                extension  = 'zip'
-                classifier = 'xcframework'
+                extension = 'zip'
             }
 
             pom {
