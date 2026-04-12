@@ -35,6 +35,8 @@ jobs:
         run: swift build -c release
 
       - name: Test (parallel)
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
         run: swift test --parallel
 
   # ── Validate android/Package.swift resolves ──────────────────────────────────

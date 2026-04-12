@@ -76,6 +76,31 @@ final class _TMDBContainer: @unchecked Sendable {
             TMDBTrendingViewModel(repository: r.resolve((any TMDBRepository).self)!)
         }.inObjectScope(.container)
 
+        // ── Countries GraphQL (v1.1.4+) ─────────────────────────────────────
+        // GraphqlClient shares the same HTTPClient so interceptors (Chucker,
+        // Pulse) capture both REST and GraphQL traffic.
+
+        c.register(GraphqlClient.self) { r in
+            GraphqlClient(httpClient: r.resolve((any HTTPClient).self)!)
+        }.inObjectScope(.container)
+
+        c.register((any CountriesRepository).self) { r in
+            CountriesRepositoryImpl(graphqlClient: r.resolve(GraphqlClient.self)!)
+                as any CountriesRepository
+        }.inObjectScope(.container)
+
+        c.register(CountriesViewModel.self) { r in
+            CountriesViewModel(repository: r.resolve((any CountriesRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(ContinentsViewModel.self) { r in
+            ContinentsViewModel(repository: r.resolve((any CountriesRepository).self)!)
+        }.inObjectScope(.container)
+
+        c.register(LanguagesViewModel.self) { r in
+            LanguagesViewModel(repository: r.resolve((any CountriesRepository).self)!)
+        }.inObjectScope(.container)
+
         self.container = c
         self.resolver = c.synchronize()
     }
@@ -114,6 +139,20 @@ final class _TMDBContainer: @unchecked Sendable {
     }
     var trendingViewModel: TMDBTrendingViewModel {
         resolver.resolve(TMDBTrendingViewModel.self)!
+    }
+
+    // Countries GraphQL viewmodels (v1.1.4+)
+    var countriesViewModel: CountriesViewModel {
+        resolver.resolve(CountriesViewModel.self)!
+    }
+    var continentsViewModel: ContinentsViewModel {
+        resolver.resolve(ContinentsViewModel.self)!
+    }
+    var languagesViewModel: LanguagesViewModel {
+        resolver.resolve(LanguagesViewModel.self)!
+    }
+    var countriesRepository: any CountriesRepository {
+        resolver.resolve((any CountriesRepository).self)!
     }
 
     // ── Re-registration (used by configure() and test hooks) ────────────────
@@ -227,5 +266,30 @@ extension TMDBContainer {
     /// Static func form for JExtractSwiftPlugin Java binding.
     public static func getTrendingViewModel() -> TMDBTrendingViewModel {
         _TMDBContainer.shared.trendingViewModel
+    }
+
+    // ── Countries GraphQL viewmodels (v1.1.4+) ─────────────────────────────
+
+    /// Returns the Countries screen viewmodel — all countries with flag, currency.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getCountriesViewModel() -> CountriesViewModel {
+        _TMDBContainer.shared.countriesViewModel
+    }
+
+    /// Returns the Continents screen viewmodel — continents with nested countries.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getContinentsViewModel() -> ContinentsViewModel {
+        _TMDBContainer.shared.continentsViewModel
+    }
+
+    /// Returns the Languages screen viewmodel — world languages.
+    /// Static func form for JExtractSwiftPlugin Java binding.
+    public static func getLanguagesViewModel() -> LanguagesViewModel {
+        _TMDBContainer.shared.languagesViewModel
+    }
+
+    /// The Countries repository. Singleton for the container's lifetime.
+    public var countriesRepository: any CountriesRepository {
+        _TMDBContainer.shared.countriesRepository
     }
 }
