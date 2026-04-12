@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 # Self-hosted Mac Studio runner (ARM64, M1 Max, all Swift+Android toolchain
 # pre-installed). The runner is registered to this repo with labels:
@@ -167,16 +166,20 @@ jobs:
           echo "Verifying swiftkit-core in ~/.m2:"
           ls -la "$MARKER" || { echo "ERROR: bootstrap did not produce $MARKER"; exit 1; }
 
-      - name: Publish swiftkit-core to GitHub Packages
+      - name: Authenticate to GCP
+        env:
+          GCS_SA_KEY_JSON: ${{ secrets.GCS_SA_KEY_JSON }}
+        run: |
+          echo "$GCS_SA_KEY_JSON" > "$RUNNER_TEMP/gcs-key.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/gcs-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcs-key.json" >> "$GITHUB_ENV"
+
+      - name: Publish swiftkit-core to GCS Maven
         # Without this, the SDK's published POM declares
         # `org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT` as a runtime dep
         # but consumers can't resolve it (it lives only in this runner's
-        # local Maven). Re-publish the JAR + POM to GH Packages so any
-        # consumer adding the SwiftAndroidIMDBSdk Maven repo gets it
-        # transitively without needing `mavenLocal()`.
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # local Maven). Re-publish the JAR to GCS Maven so any consumer
+        # adding the GCS repo gets it transitively without `mavenLocal()`.
         shell: bash --noprofile --norc {0}
         run: |
           set +e
@@ -185,9 +188,6 @@ jobs:
           export JAVA_HOME="$JDK17"
           export PATH="$JDK17/bin:$PATH"
 
-          # The bootstrap step published swiftkit-core to ~/.m2 with a
-          # timestamped SNAPSHOT jar (e.g. swiftkit-core-1.0-20260411.155000-1.jar).
-          # Find the actual file rather than assuming a fixed name.
           SKC_DIR="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT"
           JAR=$(ls -1t "$SKC_DIR"/swiftkit-core-1.0-*.jar 2>/dev/null | grep -v sources | grep -v javadoc | head -1)
           if [[ -z "$JAR" || ! -f "$JAR" ]]; then
@@ -203,23 +203,13 @@ jobs:
           cp scripts/publish-swiftkit-core.gradle "$STAGE/build.gradle"
           : > "$STAGE/settings.gradle"
 
-          LOG="$RUNNER_TEMP/publish-skc.log"
           /opt/homebrew/bin/gradle \
             -p "$STAGE" \
-            publishSwiftkitCorePublicationToGitHubPackagesRepository \
+            publishSwiftkitCorePublicationToGCSRepository \
             --no-daemon --stacktrace \
-            -PjarPath="$JAR" 2>&1 | tee "$LOG"
-          STATUS=${PIPESTATUS[0]}
-          if [[ $STATUS -ne 0 ]]; then
-            if grep -q "status code 409" "$LOG"; then
-              # 1.0-SNAPSHOT is replaceable in normal Maven, but GitHub Packages
-              # treats it like a fixed version and returns 409. Idempotent skip
-              # — if the JAR is already up there, no action needed.
-              echo "::notice::swiftkit-core 1.0-SNAPSHOT already in GitHub Packages — skipping publish"
-              exit 0
-            fi
-            exit $STATUS
-          fi
+            -PjarPath="$JAR" 2>&1
+          STATUS=$?
+          exit $STATUS
 
       - name: Build Android AAR (assembleRelease)
         working-directory: android
@@ -242,39 +232,17 @@ jobs:
           fi
           echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
 
-      - name: Publish AAR to GitHub Packages
+      - name: Publish AAR to GCS Maven
         working-directory: android
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Explicit shell — GitHub's default `bash -eo pipefail` would exit at
-        # the gradle failure before the 409 detection runs.
-        shell: bash --noprofile --norc {0}
         run: |
-          set +e
+          set -euo pipefail
           if [[ -x ./gradlew ]]; then
             GRADLE=./gradlew
           else
             GRADLE=/opt/homebrew/bin/gradle
           fi
-          LOG="$RUNNER_TEMP/publish-aar.log"
-          # publishReleasePublicationToGitHubPackagesRepository is generated
-          # by the maven-publish plugin from the GitHubPackages repo block in
-          # android/build.gradle. The :release publication reuses the AAR that
-          # assembleRelease just produced, so this is fast.
-          $GRADLE publishReleasePublicationToGitHubPackagesRepository \
-            --no-daemon --stacktrace 2>&1 | tee "$LOG"
-          STATUS=${PIPESTATUS[0]}
-          if [[ $STATUS -ne 0 ]]; then
-            if grep -q "status code 409" "$LOG"; then
-              # GitHub Packages refuses to overwrite an existing Maven version.
-              # On a re-tag of the same version this is the correct end state,
-              # so swallow the 409 and proceed (idempotent publish).
-              echo "::notice::AAR version already exists in GitHub Packages — skipping publish"
-              exit 0
-            fi
-            exit $STATUS
-          fi
+          $GRADLE publishReleasePublicationToGCSRepository \
+            --no-daemon --stacktrace
 
       - name: Locate and rename AAR for upload
         id: aar
@@ -332,24 +300,17 @@ jobs:
         # See the script header for why we don't use the SwiftPM scheme directly.
         run: bash scripts/build-xcframework.sh "$RUNNER_TEMP/xcframework"
 
-      - name: Publish XCFramework to GitHub Packages
-        # Mirrors the supabase-sdk pattern: KMP publishes per-target Maven
-        # artifacts (supabase-core-iosarm64, …) to GitHub Packages. Our project
-        # isn't KMP, so we publish a single fat artifact whose .zip contains
-        # ios-arm64, ios-arm64_x86_64-simulator and macos-arm64_x86_64.
-        #
-        # scripts/publish-xcframework.gradle is a standalone build file that
-        # only applies the maven-publish plugin — no AGP, no Swift toolchain —
-        # so it runs cleanly without bootstrapping swift-java.
+      - name: Authenticate to GCP
         env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Explicit shell — see notes on the AAR publish step above.
-        shell: bash --noprofile --norc {0}
+          GCS_SA_KEY_JSON: ${{ secrets.GCS_SA_KEY_JSON }}
         run: |
-          set +e
-          set -uo pipefail
-          # JDK 17 — same toolchain the AAR job uses, compatible with Gradle 9
+          echo "$GCS_SA_KEY_JSON" > "$RUNNER_TEMP/gcs-key.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/gcs-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcs-key.json" >> "$GITHUB_ENV"
+
+      - name: Publish XCFramework to GCS Maven
+        run: |
+          set -euo pipefail
           JDK17="$(/usr/libexec/java_home -v 17)"
           export JAVA_HOME="$JDK17"
           export PATH="$JDK17/bin:$PATH"
@@ -357,43 +318,19 @@ jobs:
           VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
           echo "Publishing swift-android-sdk-ios:$VERSION"
 
-          # Stage the publish script in its own dir with an empty settings.gradle
-          # so Gradle treats it as a single-project build (no upward search).
           STAGE="$RUNNER_TEMP/xcfpub"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
           cp scripts/publish-xcframework.gradle "$STAGE/build.gradle"
           : > "$STAGE/settings.gradle"
 
-          LOG="$RUNNER_TEMP/publish-xcf.log"
           ZIP="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip"
-          set +e
           /opt/homebrew/bin/gradle \
             -p "$STAGE" \
-            publishIosXcframeworkPublicationToGitHubPackagesRepository \
+            publishIosXcframeworkPublicationToGCSRepository \
             --no-daemon --stacktrace \
             -PxcframeworkZip="$ZIP" \
-            -PsdkVersion="$VERSION" 2>&1 | tee "$LOG"
-          STATUS=${PIPESTATUS[0]}
-          set -e
-          if [[ $STATUS -ne 0 ]] && grep -q "status code 409" "$LOG"; then
-            # GitHub Packages already has v$VERSION. The local zip we just built
-            # is byte-different (xcodebuild output isn't reproducible) so we
-            # MUST replace the local copy with the canonical bytes already on
-            # GH Packages — otherwise the wrapper repo's Package.swift checksum
-            # will diverge from what consumers actually download.
-            EXISTING_URL="https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk/io/github/erikg84/swift-android-sdk-ios/$VERSION/swift-android-sdk-ios-$VERSION.zip"
-            echo "::notice::XCFramework v$VERSION already in GH Packages — replacing local zip with canonical bytes from $EXISTING_URL"
-            curl -fsSL \
-              -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" \
-              -H "Accept: application/octet-stream" \
-              -o "$ZIP" \
-              "$EXISTING_URL" || { echo "ERROR: failed to fetch canonical bytes"; exit 1; }
-            shasum -a 256 "$ZIP" | awk '{print $1}' > "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256"
-            echo "Canonical sha256: $(cat $RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256)"
-            exit 0
-          fi
-          exit $STATUS
+            -PsdkVersion="$VERSION"
 
       - name: Read checksum + tag
         # MUST run AFTER publish — the publish step may have replaced the
@@ -465,23 +402,18 @@ jobs:
 
             ### iOS — Swift Package Manager (recommended)
             One clean URL — SPM only clones the ~5KB wrapper repo, then downloads the
-            XCFramework from GitHub Packages. **One-time setup**: add a `~/.netrc` entry
-            for `maven.pkg.github.com` (see [DISTRIBUTION.md](https://github.com/erikg84/SwiftAndroidIMDBSdk/blob/main/DISTRIBUTION.md#one-time-consumer-setup)).
+            XCFramework from a public GCS bucket. No auth required.
             ```swift
             .package(url: "https://github.com/erikg84/swift-android-idbm-sdk-spm", from: "${{ steps.ver.outputs.maven }}")
             ```
 
             ### Android — Gradle (recommended)
             ```groovy
-            // settings.gradle — add the GitHub Packages Maven repo with read:packages auth
+            // settings.gradle — public GCS Maven repo, no auth needed
             dependencyResolutionManagement {
                 repositories {
                     maven {
-                        url = uri("https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk")
-                        credentials {
-                            username = settings.ext.find('gpr.user') ?: System.getenv('GITHUB_ACTOR')
-                            password = settings.ext.find('gpr.token') ?: System.getenv('GITHUB_TOKEN')
-                        }
+                        url = uri("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven")
                     }
                 }
             }
@@ -491,8 +423,6 @@ jobs:
                 implementation 'io.github.erikg84:swift-android-sdk:${{ steps.ver.outputs.maven }}'
             }
             ```
-
-            See [DISTRIBUTION.md](https://github.com/erikg84/SwiftAndroidIMDBSdk/blob/main/DISTRIBUTION.md) for the full architecture and fallback options (release-asset XCFramework, raw AAR download).
           files: |
             artifacts/*.aar
             artifacts/*.aar.sha256
@@ -545,10 +475,6 @@ jobs:
           CHECKSUM: ${{ steps.meta.outputs.checksum }}
         run: |
           cd wrapper
-          # Idempotent rewrite — match the existing url/checksum lines and
-          # replace, regardless of what version was there before. Anchored on
-          # the unique substring `swift-android-sdk-ios/` so we don't touch
-          # other parts of the file.
           python3 - <<'PY'
           import os, re, pathlib
           ver = os.environ['VERSION']
@@ -556,12 +482,12 @@ jobs:
           p = pathlib.Path('Package.swift')
           src = p.read_text()
           new_url = (
-              f'https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk/'
-              f'io/github/erikg84/swift-android-sdk-ios/{ver}/'
+              f'https://storage.googleapis.com/dallaslabs-sdk-artifacts/'
+              f'maven/io/github/erikg84/swift-android-sdk-ios/{ver}/'
               f'swift-android-sdk-ios-{ver}.zip'
           )
           src = re.sub(
-              r'url:\s*"https://maven\.pkg\.github\.com/[^"]*"',
+              r'url:\s*"https://[^"]*"',
               f'url: "{new_url}"',
               src,
           )

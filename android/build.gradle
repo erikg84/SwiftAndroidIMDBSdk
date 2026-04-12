@@ -245,29 +245,13 @@ afterEvaluate {
         }
 
         repositories {
-            // GitHub Packages — primary distribution channel for the AAR.
-            // Auth uses the workflow's GITHUB_TOKEN (or a PAT with packages:write
-            // for local publishing). Consumers add the same maven{} block to
-            // their settings.gradle and authenticate with a packages:read PAT.
+            // GCS bucket — primary distribution channel for the AAR.
+            // Gradle's built-in gcs:// transport authenticates via Application
+            // Default Credentials (set by google-github-actions/auth in CI).
+            // Consumers read from the public HTTPS URL — no auth needed.
             maven {
-                name = 'GitHubPackages'
-                url  = uri(findProperty('githubPackagesUrl')
-                    ?: 'https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk')
-                credentials {
-                    username = findProperty('githubActor') ?: System.getenv('GITHUB_ACTOR')
-                    password = findProperty('githubToken') ?: System.getenv('GITHUB_TOKEN')
-                }
-            }
-            // Sonatype OSSRH — kept for future Maven Central publishing.
-            maven {
-                name = 'OSSRH'
-                url  = uri(sdkVersion.endsWith('SNAPSHOT')
-                    ? 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
-                    : 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
-                credentials {
-                    username = findProperty('ossrhUsername') ?: System.getenv('OSSRH_USERNAME')
-                    password = findProperty('ossrhPassword') ?: System.getenv('OSSRH_PASSWORD')
-                }
+                name = 'GCS'
+                url  = uri('gcs://dallaslabs-sdk-artifacts/maven')
             }
             // Convenient local output for testing without remote credentials.
             maven {
