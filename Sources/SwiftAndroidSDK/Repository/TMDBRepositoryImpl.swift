@@ -60,7 +60,7 @@ public final class TMDBRepositoryImpl: TMDBRepository {
     // MARK: - Private
 
     private func fetch<T: Decodable>(request: URLRequest) async throws -> T {
-        sdkLog.debug("TMDB \(request.httpMethod ?? "GET") → \(request.url?.path ?? "?")")
+        SdkLog.debug("TMDB \(request.httpMethod ?? "GET") → \(request.url?.path ?? "?")")
         let (data, response) = try await httpClient.perform(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
