@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 1.2.0). Used as the GitHub Release tag if not already set.'
+        description: 'Release version (e.g. 1.2.0)'
         required: false
         type: string
         default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 # Self-hosted Mac Studio runner (ARM64, M1 Max, all Swift+Android toolchain
 # pre-installed). The runner is registered to this repo with labels:
@@ -244,36 +244,14 @@ jobs:
           $GRADLE publishReleasePublicationToGCSRepository \
             --no-daemon --stacktrace
 
-      - name: Locate and rename AAR for upload
-        id: aar
+      - name: Verify AAR was built
         run: |
           AAR=$(find android/build/outputs/aar -name "*-release.aar" | head -1)
           if [[ -z "$AAR" ]]; then
             echo "ERROR: Release AAR not found after build"
             exit 1
           fi
-          # Tag (push) or workflow_dispatch input → file name
-          TAG="${{ github.ref_name }}"
-          if [[ "$TAG" == "main" || -z "$TAG" ]]; then
-            TAG="${{ inputs.version }}"
-            [[ -z "$TAG" ]] && TAG="dev-$(date +%Y%m%d-%H%M%S)"
-          fi
-          DEST="SwiftAndroidSDK-${TAG}.aar"
-          cp "$AAR" "$DEST"
-          shasum -a 256 "$DEST" > "${DEST}.sha256"
-          ls -lh "$DEST" "${DEST}.sha256"
-          echo "path=$DEST" >> "$GITHUB_OUTPUT"
-          echo "shasum_path=${DEST}.sha256" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Upload AAR artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: aar
-          path: |
-            ${{ steps.aar.outputs.path }}
-            ${{ steps.aar.outputs.shasum_path }}
-          if-no-files-found: error
+          echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
 
   build-xcframework:
     name: Build XCFramework
@@ -353,94 +331,13 @@ jobs:
             ${{ runner.temp }}/xcframework/xcframework.checksum
           if-no-files-found: error
 
-  create-release:
-    name: Create GitHub Release
-    needs: [build-aar, build-xcframework]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest   # GitHub-hosted is fine here — no toolchain needed
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download AAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: aar
-          path: artifacts
-
-      - name: Download XCFramework artifact (if available)
-        id: dl-xcf
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: xcframework
-          path: artifacts
-
-      - name: Read XCFramework checksum (if built)
-        id: checksum
-        run: |
-          if [[ -f artifacts/xcframework.checksum ]]; then
-            echo "value=$(cat artifacts/xcframework.checksum)" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=not-built" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Compute Maven version (strip leading v)
-        id: ver
-        run: |
-          REF="${{ github.ref_name }}"
-          MAVEN_VERSION="${REF#v}"
-          echo "maven=$MAVEN_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Tag: $REF → Maven version: $MAVEN_VERSION"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: SwiftAndroidSDK ${{ github.ref_name }}
-          body: |
-            ## SwiftAndroidSDK ${{ github.ref_name }}
-
-            ### iOS — Swift Package Manager (recommended)
-            One clean URL — SPM only clones the ~5KB wrapper repo, then downloads the
-            XCFramework from a public GCS bucket. No auth required.
-            ```swift
-            .package(url: "https://github.com/erikg84/swift-android-idbm-sdk-spm", from: "${{ steps.ver.outputs.maven }}")
-            ```
-
-            ### Android — Gradle (recommended)
-            ```groovy
-            // settings.gradle — public GCS Maven repo, no auth needed
-            dependencyResolutionManagement {
-                repositories {
-                    maven {
-                        url = uri("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven")
-                    }
-                }
-            }
-
-            // app/build.gradle
-            dependencies {
-                implementation 'com.dallaslabs.sdk:swift-android-sdk:${{ steps.ver.outputs.maven }}'
-            }
-            ```
-          files: |
-            artifacts/*.aar
-            artifacts/*.aar.sha256
-            artifacts/*.zip
-          generate_release_notes: true
-
   update-spm-wrapper:
     name: Update SPM wrapper repo
-    needs: [build-aar, build-xcframework, create-release]
+    needs: [build-aar, build-xcframework]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      # Cross-repo write auth uses an SSH deploy key registered on the wrapper
-      # repo with read_only=false. The private key lives in this repo's
-      # secrets as SPM_WRAPPER_DEPLOY_KEY. We chose deploy keys over a
-      # GitHub App because they're 100% scriptable via `gh api` (no UI form),
-      # scoped to exactly one repo, and don't expire. See DISTRIBUTION.md
-      # for the one-time setup commands.
+      # Cross-repo write auth uses an SSH deploy key on the wrapper repo.
       - name: Configure SSH agent with deploy key
         uses: webfactory/ssh-agent@v0.9.0
         with:
