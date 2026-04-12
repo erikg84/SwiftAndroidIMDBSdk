@@ -1,158 +1,94 @@
 # SwiftAndroidSDK
 
-A cross-platform Swift SDK — business logic and utilities shared between **iOS** and **Android**. The Swift source is the single source of truth; on Android it's cross-compiled to native `.so` files via the Swift SDK for Android and exposed to Kotlin/Java through `swift-java`'s `JExtractSwiftPlugin`.
+A cross-platform **Swift** SDK — business logic shared between **iOS** and **Android** from a single Swift codebase. On Android, Swift is cross-compiled to native `.so` libraries via the Swift SDK for Android and exposed to Kotlin/Java through `swift-java`'s JExtractSwiftPlugin.
 
-## Requirements
+## Technology Stack
 
-| Platform | Minimum version |
-|----------|----------------|
-| iOS      | 15.0           |
-| macOS    | 12.0           |
-| Android  | API 28 (Android 9) |
+| Layer | Technology | Why |
+|-------|-----------|-----|
+| **Language** | Swift 6.3 | Single source of truth for both platforms |
+| **Android Cross-Compilation** | Swift SDK for Android | Compiles Swift to native ARM/x86 `.so` files |
+| **Android JNI Bridge** | swift-java / JExtractSwiftPlugin | Auto-generates Java wrappers from Swift public API |
+| **Networking (REST)** | URLSession | Native on iOS; FoundationNetworking on Android via swift-java |
+| **Networking (GraphQL)** | Raw URLRequest POST | Thin `GraphqlClient` — no Apollo needed |
+| **DI** | Swinject (internal import) | Thread-safe container, hidden from public API surface |
+| **Logging** | os.Logger (iOS) + print (Android) | Native OSLog on Apple platforms, Logcat-compatible print on Android |
+| **Serialization** | JSONDecoder / JSONEncoder | Foundation-native, zero dependencies |
+| **Publishing (Android)** | GCS Maven | Public bucket — consumers add one `maven {}` block, no auth |
+| **Publishing (iOS)** | GCS + Gitea Swift Registry | XCFramework on GCS, Gitea serves Package.swift for SPM resolution |
+| **CI/CD** | GitHub Actions (self-hosted Mac Studio) | Build AAR + XCFramework, run tests, publish to GCS + Gitea |
+| **Testing** | Apple Testing framework | 42 tests including live API integration tests |
 
----
+## Features
 
-## iOS Integration (Swift Package Manager)
+### TMDB Features (REST API)
+5 ViewModels powered by the [TMDB API](https://www.themoviedb.org/documentation/api):
+- **TMDBHomeViewModel** — trending media
+- **TMDBMoviesViewModel** — popular movies
+- **TMDBTVShowsViewModel** — popular TV shows
+- **TMDBSearchViewModel** — search movies
+- **TMDBTrendingViewModel** — trending with day/week toggle
 
-Consumers add **one URL** — a tiny wrapper repo that pulls the prebuilt XCFramework from GitHub Packages. This avoids cloning the parent repo's Android cross-compilation toolchain.
+### Countries Features (GraphQL API)
+3 ViewModels powered by the [Countries GraphQL API](https://countries.trevorblades.com/):
+- **CountriesViewModel** — all countries with flags, currency
+- **ContinentsViewModel** — continents with nested countries
+- **LanguagesViewModel** — world languages with native names
 
-### One-time setup
+### Network Interceptor Support
+The SDK uses the `HTTPClient` protocol — clients can register any implementation:
+- **iOS**: Pass a Pulse-configured `URLSession` to `URLSessionHTTPClient(session:)`
+- **Android**: Implement `HTTPClient` backed by OkHttp with Chucker interceptor
 
-GitHub Packages requires authentication for binary downloads. SPM (Xcode 13.3+) auto-reads `~/.netrc`, so the setup is one-time per machine.
+Both REST and GraphQL traffic flows through the same `HTTPClient` instance.
 
-1. Create a GitHub PAT with `read:packages` scope at https://github.com/settings/personal-access-tokens/new
-2. Add to `~/.netrc`:
-   ```
-   machine maven.pkg.github.com
-     login <your-github-username>
-     password <your-pat>
-   ```
-3. `chmod 600 ~/.netrc`
+## Architecture
 
-Full walkthrough in [DISTRIBUTION.md → Consumer setup](DISTRIBUTION.md#consumer-setup).
-
-### Add the dependency
-
-**Xcode**: File → Add Package Dependencies → URL `https://github.com/erikg84/swift-android-idbm-sdk-spm` → rule **Up to Next Major** from `1.0.0`.
-
-**Package.swift**:
-```swift
-dependencies: [
-    .package(url: "https://github.com/erikg84/swift-android-idbm-sdk-spm", from: "1.0.0"),
-],
-targets: [
-    .target(
-        name: "YourApp",
-        dependencies: [
-            .product(name: "SwiftAndroidSDK", package: "swift-android-idbm-sdk-spm")
-        ]
-    ),
-]
+```
+Sources/SwiftAndroidSDK/
+  Configuration/       TMDBConfiguration (bearerToken, apiKey, baseURL)
+  Container/           TMDBContainer — public DI facade (hides Swinject)
+  Models/              TMDB data models (Movie, TVShow, MediaItem, etc.)
+  Network/             HTTPClient protocol, Endpoint enum, TMDBError
+  Repository/          TMDBRepository protocol + implementation
+  ViewModel/Screens/   5 stateless command-object ViewModels
+  Countries/           GraphQL models, client, repository, 3 ViewModels
+  SdkLogger.swift      os.Logger on iOS, print on Android
 ```
 
-### Quick start
+## Consumer Setup
 
-```swift
-import SwiftAndroidSDK
-
-let sdk = SwiftAndroidSDK()
-print(sdk.sdkVersion())           // "1.0.0"
-print(reverseString("hello"))     // "olleh"
-print(base64Encode("Swift!"))     // "U3dpZnQh"
-print(isValidJSON(#"{"ok":true}"#)) // true
-```
-
----
-
-## Android Integration (Gradle)
-
-Consumers add the GitHub Packages Maven repo (one-time, in `settings.gradle`) and the Maven coordinate.
-
-### One-time setup
-
-Add a `read:packages` PAT to `~/.gradle/gradle.properties`:
-```properties
-gpr.user=<your-github-username>
-gpr.token=<your-pat>
-```
-
-Add the Maven repo to `settings.gradle`:
-```groovy
-dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            url = uri("https://maven.pkg.github.com/erikg84/SwiftAndroidIMDBSdk")
-            credentials {
-                username = settings.ext.find('gpr.user') ?: System.getenv('GITHUB_ACTOR')
-                password = settings.ext.find('gpr.token') ?: System.getenv('GITHUB_TOKEN')
-            }
-        }
-    }
-}
-```
-
-### Add the dependency
-
-```groovy
-// app/build.gradle
-dependencies {
-    implementation 'io.github.erikg84:swift-android-sdk:1.0.0'
-}
-```
-
-`minSdkVersion` must be ≥ 28.
-
-### Quick start
-
+**Android:**
 ```kotlin
-import io.github.erikg84.swiftandroidsdk.SwiftAndroidSDK
-import io.github.erikg84.swiftandroidsdk.SwiftAndroidSDKKt
+// settings.gradle.kts — public, no auth
+maven { url = uri("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven") }
 
-val sdk = SwiftAndroidSDK()
-println(sdk.sdkVersion())                          // "1.0.0"
-println(SwiftAndroidSDKKt.reverseString("hello"))  // "olleh"
-println(SwiftAndroidSDKKt.base64Encode("Swift!"))  // "U3dpZnQh"
+// app/build.gradle.kts
+implementation("com.dallaslabs.sdk:swift-android-sdk:1.1.6")
 ```
 
-> **Note:** Java wrapper class names are generated by `swift-java`'s `JExtractSwiftPlugin`. The exact package/class names above may vary based on namespace configuration.
-
----
-
-## How distribution works
-
-The release workflow publishes **four** artifacts on every tag push, but consumers only ever reference **two** URLs:
-
-| Channel | Coordinate / URL | Auth |
-|---|---|---|
-| **iOS SPM wrapper** | `https://github.com/erikg84/swift-android-idbm-sdk-spm` | None to clone; `~/.netrc` to fetch the binary |
-| **iOS XCFramework** *(via the wrapper)* | `io.github.erikg84:swift-android-sdk-ios:<v>` (GitHub Packages Maven) | `read:packages` PAT |
-| **Android AAR** | `io.github.erikg84:swift-android-sdk:<v>` (GitHub Packages Maven) | `read:packages` PAT |
-| **Fallback assets** | GitHub Releases page (raw `.aar` and `.xcframework.zip`) | None |
-
-The full architecture, including why we use a separate SPM wrapper repo, why we prefer GitHub Packages over Releases for the canonical binaries, and the maintainer setup for the cross-repo `update-spm-wrapper` job, is in **[DISTRIBUTION.md](DISTRIBUTION.md)**.
-
----
-
-## Building from Source
-
-For maintainers — see **[PUBLISHING.md](PUBLISHING.md)** for the legacy hand-publishing guide and **[DISTRIBUTION.md → Maintainer setup](DISTRIBUTION.md#maintainer-setup)** for the automated CI flow.
-
-Quick local build:
+**iOS (Gitea Swift Package Registry):**
 ```bash
-# One-time setup
-bash scripts/bootstrap.sh
-
-# Build Android AAR
-bash scripts/build-android.sh --release
-
-# Build iOS XCFramework
-bash scripts/build-xcframework.sh
+swift package-registry set http://34.60.86.141:3000/api/packages/dallaslabs-sdk/swift
+```
+```swift
+.package(id: "dallaslabs-sdk.swift-android-sdk", from: "1.1.6")
 ```
 
----
+## Integration Tests
+
+42 tests total (14 new integration tests against live APIs):
+- 9 Countries GraphQL tests (public, no auth)
+- 5 TMDB REST tests (needs `TMDB_READ_TOKEN` env var)
+- 28 unit tests with mocks
+
+Run locally: `swift test`
+
+## Client Apps
+
+- [SwiftAndroidImdbDemo-Android](https://github.com/erikg84/SwiftAndroidImdbDemo-Android)
+- [SwiftAndroidImdbDemo-iOS](https://github.com/erikg84/SwiftAndroidImdbDemo-iOS)
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0
