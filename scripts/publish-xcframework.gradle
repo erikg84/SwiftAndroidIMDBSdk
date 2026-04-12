@@ -29,7 +29,7 @@ plugins {
     id 'maven-publish'
 }
 
-def sdkGroupId    = findProperty('sdkGroupId')    ?: 'io.github.erikg84'
+def sdkGroupId    = findProperty('sdkGroupId')    ?: 'com.dallaslabs.sdk'
 def sdkArtifactId = findProperty('sdkArtifactId') ?: 'swift-android-sdk-ios'
 def sdkVersion    = findProperty('sdkVersion')    ?: '0.0.0-SNAPSHOT'
 def xcframeworkZip = findProperty('xcframeworkZip')

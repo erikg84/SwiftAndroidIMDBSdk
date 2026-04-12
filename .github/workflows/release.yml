@@ -420,7 +420,7 @@ jobs:
 
             // app/build.gradle
             dependencies {
-                implementation 'io.github.erikg84:swift-android-sdk:${{ steps.ver.outputs.maven }}'
+                implementation 'com.dallaslabs.sdk:swift-android-sdk:${{ steps.ver.outputs.maven }}'
             }
             ```
           files: |
@@ -483,7 +483,7 @@ jobs:
           src = p.read_text()
           new_url = (
               f'https://storage.googleapis.com/dallaslabs-sdk-artifacts/'
-              f'maven/io/github/erikg84/swift-android-sdk-ios/{ver}/'
+              f'maven/com/dallaslabs/sdk/swift-android-sdk-ios/{ver}/'
               f'swift-android-sdk-ios-{ver}.zip'
           )
           src = re.sub(
@@ -512,7 +512,7 @@ jobs:
             git commit -m "Bump to v${VERSION}
 
           Auto-updated by SwiftAndroidIMDBSdk release workflow.
-          XCFramework: io.github.erikg84:swift-android-sdk-ios:${VERSION}"
+          XCFramework: com.dallaslabs.sdk:swift-android-sdk-ios:${VERSION}"
             git push origin main
           fi
 
