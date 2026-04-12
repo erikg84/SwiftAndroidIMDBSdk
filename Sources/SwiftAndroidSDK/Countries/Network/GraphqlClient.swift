@@ -29,23 +29,28 @@ public final class GraphqlClient: Sendable {
         let body = ["query": query]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        sdkLog.debug("GraphQL POST → \(url)")
         let (data, response) = try await httpClient.perform(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
+            sdkLog.error("GraphQL: invalid response (not HTTPURLResponse)")
             throw GraphqlError.invalidResponse
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let detail = String(data: data, encoding: .utf8)
+            sdkLog.error("GraphQL error: HTTP \(httpResponse.statusCode)")
             throw GraphqlError.httpError(
                 statusCode: httpResponse.statusCode,
                 message: detail
             )
         }
 
+        sdkLog.debug("GraphQL ← \(httpResponse.statusCode) OK")
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
+            sdkLog.error("GraphQL decode error: \(error.localizedDescription)")
             throw GraphqlError.decodingError(error.localizedDescription)
         }
     }

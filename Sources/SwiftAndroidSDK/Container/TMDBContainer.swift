@@ -217,9 +217,11 @@ public final class TMDBContainer: @unchecked Sendable {
 
     /// Configure TMDB credentials. Call once at app launch before any API call.
     public func configure(bearerToken: String, apiKey: String = "") {
+        sdkLog.info("TMDBContainer.configure() — initializing SDK")
         _TMDBContainer.shared.registerConfiguration {
             TMDBConfiguration(bearerToken: bearerToken, apiKey: apiKey)
         }
+        sdkLog.info("TMDBContainer.configure() — SDK ready")
     }
 
     // ── Resolved dependencies ────────────────────────────────────────────────

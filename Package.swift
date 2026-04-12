@@ -16,18 +16,17 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // Swinject — runtime DI container. Replaced Factory 2.5.3 in v1.0.1
-        // because Factory's .swiftinterface generation has an unresolvable
-        // module-vs-type naming ambiguity that breaks XCFramework builds with
-        // BUILD_LIBRARY_FOR_DISTRIBUTION=YES. Swinject's module name is
-        // `Swinject` (the main type is `Container`), so it has no such collision.
+        // Swinject — runtime DI container
         .package(url: "https://github.com/Swinject/Swinject.git", from: "2.10.0"),
+        // swift-log — cross-platform logging (OSLog on iOS, Logcat on Android)
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.2"),
     ],
     targets: [
         .target(
             name: "SwiftAndroidSDK",
             dependencies: [
                 .product(name: "Swinject", package: "Swinject"),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .testTarget(
