@@ -310,113 +310,58 @@ jobs:
             -PxcframeworkZip="$ZIP" \
             -PsdkVersion="$VERSION"
 
-      - name: Read checksum + tag
-        # MUST run AFTER publish — the publish step may have replaced the
-        # local zip with canonical bytes from GH Packages on a 409, in which
-        # case the .sha256 file holds the canonical sha. Reading before
-        # publish would write the stale (pre-409) sha into the artifact.
-        id: checksum
+      - name: Upload to Gitea Swift Package Registry
+        env:
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
+          set -euo pipefail
+          VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
           CHECKSUM=$(cat "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256")
-          echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
-          echo "$CHECKSUM" > "$RUNNER_TEMP/xcframework/xcframework.checksum"
-          ls -lh "$RUNNER_TEMP/xcframework/"
+          SCOPE="dallaslabs-sdk"
+          NAME="swift-android-sdk"
+          XCF_URL="https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven/com/dallaslabs/sdk/swift-android-sdk-ios/${VERSION}/swift-android-sdk-ios-${VERSION}.zip"
 
-      - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcframework
-          path: |
-            ${{ runner.temp }}/xcframework/SwiftAndroidSDK.xcframework.zip
-            ${{ runner.temp }}/xcframework/xcframework.checksum
-          if-no-files-found: error
+          # Create source archive with Package.swift pointing at GCS
+          PKG_DIR="$RUNNER_TEMP/swift-pkg"
+          mkdir -p "$PKG_DIR/Sources/SwiftAndroidSDKStub"
+          echo "// placeholder" > "$PKG_DIR/Sources/SwiftAndroidSDKStub/stub.swift"
 
-  update-spm-wrapper:
-    name: Update SPM wrapper repo
-    needs: [build-aar, build-xcframework]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      # Cross-repo write auth uses an SSH deploy key on the wrapper repo.
-      - name: Configure SSH agent with deploy key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SPM_WRAPPER_DEPLOY_KEY }}
-
-      - name: Download XCFramework artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: xcframework
-          path: artifacts
-
-      - name: Compute version + checksum
-        id: meta
-        run: |
-          REF="${{ github.ref_name }}"
-          VERSION="${REF#v}"
-          CHECKSUM=$(cat artifacts/xcframework.checksum)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
-          echo "Tag: $REF → version $VERSION, checksum $CHECKSUM"
-
-      - name: Clone wrapper repo (ssh)
-        run: |
-          git clone git@github.com:erikg84/swift-android-idbm-sdk-spm.git wrapper
-          cd wrapper
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Rewrite Package.swift with new version + checksum
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          CHECKSUM: ${{ steps.meta.outputs.checksum }}
-        run: |
-          cd wrapper
-          python3 - <<'PY'
-          import os, re, pathlib
-          ver = os.environ['VERSION']
-          chk = os.environ['CHECKSUM']
-          p = pathlib.Path('Package.swift')
-          src = p.read_text()
-          new_url = (
-              f'https://storage.googleapis.com/dallaslabs-sdk-artifacts/'
-              f'maven/com/dallaslabs/sdk/swift-android-sdk-ios/{ver}/'
-              f'swift-android-sdk-ios-{ver}.zip'
+          cat > "$PKG_DIR/Package.swift" <<SWIFT
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(
+              name: "SwiftAndroidSDK",
+              platforms: [.iOS(.v15), .macOS(.v12)],
+              products: [
+                  .library(name: "SwiftAndroidSDK", targets: ["SwiftAndroidSDK"]),
+              ],
+              targets: [
+                  .binaryTarget(
+                      name: "SwiftAndroidSDK",
+                      url: "${XCF_URL}",
+                      checksum: "${CHECKSUM}"
+                  ),
+              ]
           )
-          src = re.sub(
-              r'url:\s*"https://[^"]*"',
-              f'url: "{new_url}"',
-              src,
-          )
-          src = re.sub(
-              r'checksum:\s*"[0-9a-f]{64}"',
-              f'checksum: "{chk}"',
-              src,
-          )
-          p.write_text(src)
-          print(p.read_text())
-          PY
+          SWIFT
 
-      - name: Commit, tag, push
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          cd wrapper
-          git add Package.swift
-          if git diff --cached --quiet; then
-            echo "::notice::Package.swift unchanged — skipping commit"
-          else
-            git commit -m "Bump to v${VERSION}
+          PKG_ZIP="$RUNNER_TEMP/${NAME}-${VERSION}.zip"
+          (cd "$PKG_DIR" && zip -qry "$PKG_ZIP" .)
+          ls -lh "$PKG_ZIP"
 
-          Auto-updated by SwiftAndroidIMDBSdk release workflow.
-          XCFramework: com.dallaslabs.sdk:swift-android-sdk-ios:${VERSION}"
-            git push origin main
+          URL="${GITEA_URL}/api/packages/${SCOPE}/swift/${SCOPE}/${NAME}/${VERSION}"
+          HTTP=$(curl -sS -o /tmp/upload.body -w '%{http_code}' \
+            -X PUT \
+            -H "Accept: application/vnd.swift.registry.v1+json" \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -F "source-archive=@${PKG_ZIP};type=application/zip" \
+            "${URL}")
+          echo "PUT → HTTP $HTTP"
+          if [[ "$HTTP" == "409" ]]; then
+            echo "Version ${VERSION} already exists — skipping (idempotent)"
+          elif [[ "$HTTP" != "201" ]]; then
+            cat /tmp/upload.body
+            exit 1
           fi
-
-          # Tag is independent of whether main moved (could be a re-publish).
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "::notice::Tag v${VERSION} already exists — skipping"
-          else
-            git tag -a "v${VERSION}" -m "v${VERSION}"
-            git push origin "v${VERSION}"
-          fi
+          echo "Published ${SCOPE}.${NAME} v${VERSION} to Gitea Swift Registry"
