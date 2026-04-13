@@ -26,3 +26,7 @@ local.gradle
 .vscode/
 .idea/
 *.swp
+
+.gradle/
+build/
+local.properties
