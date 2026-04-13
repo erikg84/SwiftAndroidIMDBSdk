@@ -322,12 +322,11 @@ jobs:
           NAME="swift-android-sdk"
           XCF_URL="https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven/com/dallaslabs/sdk/swift-android-sdk-ios/${VERSION}/swift-android-sdk-ios-${VERSION}.zip"
 
-          # Create source archive with Package.swift pointing at GCS
-          PKG_DIR="$RUNNER_TEMP/swift-pkg"
-          mkdir -p "$PKG_DIR/Sources/SwiftAndroidSDKStub"
-          echo "// placeholder" > "$PKG_DIR/Sources/SwiftAndroidSDKStub/stub.swift"
+          # Create source archive with single top-level directory (required by SPM)
+          PKG_DIR="$RUNNER_TEMP/swift-pkg/${NAME}-${VERSION}"
+          mkdir -p "$PKG_DIR"
 
-          cat > "$PKG_DIR/Package.swift" <<SWIFT
+          cat > "$PKG_DIR/Package.swift" <<'SWIFTEOF'
           // swift-tools-version: 5.9
           import PackageDescription
           let package = Package(
@@ -339,22 +338,30 @@ jobs:
               targets: [
                   .binaryTarget(
                       name: "SwiftAndroidSDK",
-                      url: "${XCF_URL}",
-                      checksum: "${CHECKSUM}"
+                      url: "PLACEHOLDER_URL",
+                      checksum: "PLACEHOLDER_CHECKSUM"
                   ),
               ]
           )
-          SWIFT
+          SWIFTEOF
+          # Strip leading whitespace from heredoc and substitute variables
+          sed -i '' 's/^          //' "$PKG_DIR/Package.swift"
+          sed -i '' "s|PLACEHOLDER_URL|${XCF_URL}|" "$PKG_DIR/Package.swift"
+          sed -i '' "s|PLACEHOLDER_CHECKSUM|${CHECKSUM}|" "$PKG_DIR/Package.swift"
 
+          # Zip with single top-level directory
           PKG_ZIP="$RUNNER_TEMP/${NAME}-${VERSION}.zip"
-          (cd "$PKG_DIR" && zip -qry "$PKG_ZIP" .)
+          (cd "$RUNNER_TEMP/swift-pkg" && zip -qry "$PKG_ZIP" "${NAME}-${VERSION}")
           ls -lh "$PKG_ZIP"
 
+          # Upload to Gitea with metadata
           URL="${GITEA_URL}/api/packages/${SCOPE}/swift/${SCOPE}/${NAME}/${VERSION}"
+          METADATA='{"@context":["http://schema.org/"],"@type":"SoftwareSourceCode","name":"'"${NAME}"'","version":"'"${VERSION}"'","description":"Swift Android SDK for iOS","author":{"@type":"Person","givenName":"Dallas","familyName":"Labs","name":"Dallas Labs"},"programmingLanguage":{"@type":"ComputerLanguage","name":"Swift","url":"https://swift.org"}}'
           HTTP=$(curl -sS -o /tmp/upload.body -w '%{http_code}' \
             -X PUT \
             -H "Accept: application/vnd.swift.registry.v1+json" \
             -H "Authorization: token ${GITEA_TOKEN}" \
+            -F "metadata=${METADATA};type=application/json" \
             -F "source-archive=@${PKG_ZIP};type=application/zip" \
             "${URL}")
           echo "PUT → HTTP $HTTP"
