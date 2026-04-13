@@ -15,8 +15,8 @@ A cross-platform **Swift** SDK — business logic shared between **iOS** and **A
 | **Logging** | os.Logger (iOS) + print (Android) | Native OSLog on Apple platforms, Logcat-compatible print on Android |
 | **Serialization** | JSONDecoder / JSONEncoder | Foundation-native, zero dependencies |
 | **Publishing (Android)** | GCS Maven | Public bucket — consumers add one `maven {}` block, no auth |
-| **Publishing (iOS)** | GCS + Gitea Swift Registry | XCFramework on GCS, Gitea serves Package.swift for SPM resolution |
-| **CI/CD** | GitHub Actions (self-hosted Mac Studio) | Build AAR + XCFramework, run tests, publish to GCS + Gitea |
+| **Publishing (iOS)** | GCS + Gitea Swift Registry | XCFramework binary on GCS; Gitea registry serves version metadata so iOS clients use clean `id:` resolution — no hardcoded URLs |
+| **CI/CD** | GitHub Actions (self-hosted Mac Studio) | Tag push → build Android AAR → publish to GCS Maven → build XCFramework → upload to GCS → publish source archive to Gitea registry |
 | **Testing** | Apple Testing framework | 42 tests including live API integration tests |
 
 ## Features
@@ -64,16 +64,25 @@ Sources/SwiftAndroidSDK/
 maven { url = uri("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven") }
 
 // app/build.gradle.kts
-implementation("com.dallaslabs.sdk:swift-android-sdk:1.1.6")
+implementation("com.dallaslabs.sdk:swift-android-sdk:1.1.7")
 ```
 
 **iOS (Gitea Swift Package Registry):**
+
+One-time registry setup per machine:
 ```bash
-swift package-registry set http://34.60.86.141:3000/api/packages/dallaslabs-sdk/swift
+swift package-registry set --global --scope dallaslabs-sdk --allow-insecure-http \
+  http://34.60.86.141:3000/api/packages/dallaslabs-sdk/swift
 ```
+Then in your `Package.swift`:
 ```swift
-.package(id: "dallaslabs-sdk.swift-android-sdk", from: "1.1.6")
+dependencies: [
+    .package(id: "dallaslabs-sdk.swift-android-sdk", from: "1.1.7"),
+]
 ```
+SPM queries Gitea for the version, Gitea returns a `Package.swift` with a `binaryTarget` pointing at GCS, and SPM downloads the XCFramework automatically. No zip URLs in client code.
+
+> **Note:** XcodeGen does not support `id:`-based registry packages natively. The client repos use a local `Package.swift` wrapper that declares the registry dependency, and XcodeGen references it via `path: .`.
 
 ## Integration Tests
 
