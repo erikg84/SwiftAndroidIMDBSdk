@@ -2,373 +2,58 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g. 1.2.0)'
         required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
-
-# Self-hosted Mac Studio runner (ARM64, M1 Max, all Swift+Android toolchain
-# pre-installed). The runner is registered to this repo with labels:
-#   self-hosted, macOS, ARM64, mac-studio, swift-android
-#
-# Toolchain on the runner (verified 2026-04-10):
-#   - Swift 6.3 + Android SDK bundle (`swift sdk list` shows swift-6.3-RELEASE_android)
-#   - Android NDK 28.2.13676358 at ~/Library/Android/sdk/ndk/
-#   - JDK 17 (Microsoft) and JDK 21 (Corretto) at ~/Library/Java/JavaVirtualMachines/
-#   - Gradle (system, /opt/homebrew/bin/gradle)
-#   - Xcode 16.x for the iOS XCFramework job
-#
-# The hosted-runner version of this workflow used JDK 25 because swift-java
-# hardcodes that version in its build files. publish-local.sh works around it
-# by patching swift-java's hardcoded JavaLanguageVersion at bootstrap time, and
-# we use the same trick here. JDK 17 is then used for the actual Gradle build —
-# it's compatible with Gradle 8.11.1 + AGP 8.7.3 and matches the JDK shipped
-# with current Android Studio, so consumers don't need a separate install.
+  packages: read
 
 jobs:
-  build-aar:
-    name: Build Android AAR
+  publish:
     runs-on: [self-hosted, mac-studio]
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # need full history if release.sh wants to compare against previous tags
 
-      - name: Inspect runner state
+      - name: Configure environment
         run: |
-          echo "── Runner ──"
-          echo "Hostname: $(hostname)"
-          echo "OS:       $(sw_vers -productName) $(sw_vers -productVersion)"
-          echo "Arch:     $(uname -m)"
-          echo
-          echo "── Java toolchains ──"
-          /usr/libexec/java_home -V 2>&1 || true
-          echo
-          echo "── Swift ──"
-          /opt/homebrew/bin/swift --version 2>&1 || swift --version || true
-          /opt/homebrew/bin/swift sdk list 2>&1 || swift sdk list || true
-          echo
-          echo "── Gradle ──"
-          /opt/homebrew/bin/gradle --version 2>&1 | head -5 || gradle --version | head -5 || true
-          echo
-          echo "── Android NDK ──"
-          ls ~/Library/Android/sdk/ndk/ 2>/dev/null || true
-
-      - name: Configure environment (JDK 17 + Android NDK + Swift)
-        run: |
-          # JDK 17 (Microsoft OpenJDK) — compatible with Gradle 8.11.1 + AGP 8.7.3
-          # and matches the bundled JDK in current Android Studio releases.
-          JDK17="$(/usr/libexec/java_home -v 17 2>/dev/null)"
-          if [[ -z "$JDK17" ]]; then
-            echo "ERROR: JDK 17 not found via java_home -v 17"
-            /usr/libexec/java_home -V 2>&1 || true
-            exit 1
-          fi
+          JDK17="$(/usr/libexec/java_home -v 17)"
           echo "JAVA_HOME=$JDK17" >> "$GITHUB_ENV"
           echo "$JDK17/bin" >> "$GITHUB_PATH"
-
-          # Android NDK — pick the highest installed version
-          NDK_DIR=$(ls -d ~/Library/Android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)
-          if [[ -n "$NDK_DIR" ]]; then
-            echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
-            echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
-          fi
-
-          # Homebrew bin (gradle, swift, etc.) on PATH
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
-      - name: Verify Swift Android SDK is installed on runner
-        run: |
-          if ! swift sdk list 2>&1 | grep -q 'swift-6.3-RELEASE_android'; then
-            echo "ERROR: swift-6.3-RELEASE_android SDK not installed on runner"
-            echo "Run on Mac Studio:"
-            echo "  swift sdk install https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz \\"
-            echo "    --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088"
-            exit 1
-          fi
-          swift sdk list
-
-      - name: Override version (workflow_dispatch only)
+      - name: Override version (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        run: |
-          sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=${{ inputs.version }}/" android/gradle.properties
-          rm -f android/gradle.properties.bak
-          echo "Overrode VERSION_NAME → ${{ inputs.version }}"
-          grep VERSION_NAME android/gradle.properties
-
-      - name: Resolve swift-java SPM dependency
-        working-directory: android
-        run: swift package resolve
-
-      - name: Bootstrap swiftkit-core → Maven Local (with JDK patching)
-        # swift-java's SwiftKitCore module hardcodes Java 25 in two places:
-        #   - BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts
-        #   - SwiftKitCore/build.gradle.kts (overrides the convention)
-        # The resulting JAR is functionally identical regardless of which JDK
-        # compiles it; the gate is only a toolchain requirement check. We patch
-        # both files to use the JDK we have (21) before invoking publishToMavenLocal.
-        # This is the same approach scripts/publish-local.sh uses locally.
-        run: |
-          set -euo pipefail
-          MARKER="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core"
-          if [[ -d "$MARKER" ]]; then
-            echo "swiftkit-core already in Maven Local — skipping bootstrap"
-            ls -la "$MARKER"
-            exit 0
-          fi
-
-          # Match `swift-java` exactly — newer swift-java versions also pull
-          # in `swift-java-jni-core` as a separate Swift-only checkout, which
-          # has no gradlew. The bare `swift-java` dir is the one that ships
-          # SwiftKitCore + gradle build files.
-          SWIFT_JAVA_DIR=$(find android/.build/checkouts -maxdepth 2 -type d -name 'swift-java' 2>/dev/null | head -1)
-          if [[ -z "$SWIFT_JAVA_DIR" || ! -x "$SWIFT_JAVA_DIR/gradlew" ]]; then
-            echo "ERROR: swift-java checkout (with gradlew) not found under android/.build/checkouts/"
-            find android/.build -maxdepth 4 -type d -name 'swift-java*' 2>/dev/null || true
-            exit 1
-          fi
-          echo "swift-java checkout: $SWIFT_JAVA_DIR"
-
-          JAVA_MAJOR=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
-          echo "Patching swift-java to use JDK $JAVA_MAJOR"
-
-          CONV="$SWIFT_JAVA_DIR/BuildLogic/src/main/kotlin/build-logic.java-common-conventions.gradle.kts"
-          if [[ -f "$CONV" ]]; then
-            sed -i.bak "s/JavaLanguageVersion\\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CONV"
-            grep JavaLanguageVersion "$CONV" || true
-          fi
-
-          CORE="$SWIFT_JAVA_DIR/SwiftKitCore/build.gradle.kts"
-          if [[ -f "$CORE" ]]; then
-            sed -i.bak "s/JavaLanguageVersion\\.of([0-9]*)/JavaLanguageVersion.of($JAVA_MAJOR)/g" "$CORE"
-            grep JavaLanguageVersion "$CORE" || true
-          fi
-
-          # Clear stale BuildLogic build cache so the patches actually apply
-          rm -rf "$SWIFT_JAVA_DIR/BuildLogic/build"
-          rm -rf "$SWIFT_JAVA_DIR/.gradle"
-
-          echo "Running :SwiftKitCore:publishToMavenLocal..."
-          (cd "$SWIFT_JAVA_DIR" && \
-              ./gradlew :SwiftKitCore:publishToMavenLocal \
-                  -PskipSamples=true \
-                  --no-daemon)
-
-          echo "Verifying swiftkit-core in ~/.m2:"
-          ls -la "$MARKER" || { echo "ERROR: bootstrap did not produce $MARKER"; exit 1; }
+        run: sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=${{ inputs.version }}/" gradle.properties
 
       - name: Authenticate to GCP
         env:
           GCS_SA_KEY_JSON: ${{ secrets.GCS_SA_KEY_JSON }}
         run: |
           echo "$GCS_SA_KEY_JSON" > "$RUNNER_TEMP/gcs-key.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/gcs-key.json"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcs-key.json" >> "$GITHUB_ENV"
 
-      - name: Publish swiftkit-core to GCS Maven
-        # Without this, the SDK's published POM declares
-        # `org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT` as a runtime dep
-        # but consumers can't resolve it (it lives only in this runner's
-        # local Maven). Re-publish the JAR to GCS Maven so any consumer
-        # adding the GCS repo gets it transitively without `mavenLocal()`.
-        shell: bash --noprofile --norc {0}
-        run: |
-          set +e
-          set -uo pipefail
-          JDK17="$(/usr/libexec/java_home -v 17)"
-          export JAVA_HOME="$JDK17"
-          export PATH="$JDK17/bin:$PATH"
-
-          SKC_DIR="$HOME/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT"
-          JAR=$(ls -1t "$SKC_DIR"/swiftkit-core-1.0-*.jar 2>/dev/null | grep -v sources | grep -v javadoc | head -1)
-          if [[ -z "$JAR" || ! -f "$JAR" ]]; then
-            echo "ERROR: swiftkit-core JAR not found in $SKC_DIR"
-            ls -la "$SKC_DIR" 2>&1 || true
-            exit 1
-          fi
-          echo "Republishing $JAR"
-
-          STAGE="$RUNNER_TEMP/swiftkit-pub"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE"
-          cp scripts/publish-swiftkit-core.gradle "$STAGE/build.gradle"
-          : > "$STAGE/settings.gradle"
-
-          /opt/homebrew/bin/gradle \
-            -p "$STAGE" \
-            publishSwiftkitCorePublicationToGCSRepository \
-            --no-daemon --stacktrace \
-            -PjarPath="$JAR" 2>&1
-          STATUS=$?
-          exit $STATUS
-
-      - name: Build Android AAR (assembleRelease)
-        working-directory: android
-        run: |
-          set -euo pipefail
-          # Use the project's gradle wrapper if it exists, else system gradle
-          if [[ -x ./gradlew ]]; then
-            GRADLE=./gradlew
-          else
-            GRADLE=/opt/homebrew/bin/gradle
-          fi
-          echo "Using: $GRADLE"
-          $GRADLE assembleRelease --no-daemon --stacktrace
-
-          AAR=$(find build/outputs/aar -name "*-release.aar" 2>/dev/null | head -1)
-          if [[ -z "$AAR" ]]; then
-            echo "ERROR: release AAR not found"
-            find build -name '*.aar' 2>/dev/null || true
-            exit 1
-          fi
-          echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
-
-      - name: Publish AAR to GCS Maven
-        working-directory: android
-        run: |
-          set -euo pipefail
-          if [[ -x ./gradlew ]]; then
-            GRADLE=./gradlew
-          else
-            GRADLE=/opt/homebrew/bin/gradle
-          fi
-          $GRADLE publishReleasePublicationToGCSRepository \
-            --no-daemon --stacktrace
-
-      - name: Verify AAR was built
-        run: |
-          AAR=$(find android/build/outputs/aar -name "*-release.aar" | head -1)
-          if [[ -z "$AAR" ]]; then
-            echo "ERROR: Release AAR not found after build"
-            exit 1
-          fi
-          echo "Built: $AAR ($(du -sh "$AAR" | cut -f1))"
-
-  build-xcframework:
-    name: Build XCFramework
-    runs-on: [self-hosted, mac-studio]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Inspect Xcode
-        run: |
-          xcode-select -p
-          xcodebuild -version
-
-      - name: Override version (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        run: |
-          sed -i.bak "s/^VERSION_NAME=.*/VERSION_NAME=${{ inputs.version }}/" android/gradle.properties
-          rm -f android/gradle.properties.bak
-
-      - name: Build XCFramework
-        # scripts/build-xcframework.sh archives each platform, reassembles a
-        # static framework from the .o files + DerivedData swiftmodule, and
-        # wraps the three frameworks with `xcodebuild -create-xcframework`.
-        # See the script header for why we don't use the SwiftPM scheme directly.
-        run: bash scripts/build-xcframework.sh "$RUNNER_TEMP/xcframework"
-
-      - name: Authenticate to GCP
-        env:
-          GCS_SA_KEY_JSON: ${{ secrets.GCS_SA_KEY_JSON }}
-        run: |
-          echo "$GCS_SA_KEY_JSON" > "$RUNNER_TEMP/gcs-key.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/gcs-key.json"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcs-key.json" >> "$GITHUB_ENV"
-
-      - name: Publish XCFramework to GCS Maven
-        run: |
-          set -euo pipefail
-          JDK17="$(/usr/libexec/java_home -v 17)"
-          export JAVA_HOME="$JDK17"
-          export PATH="$JDK17/bin:$PATH"
-
-          VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
-          echo "Publishing swift-android-sdk-ios:$VERSION"
-
-          STAGE="$RUNNER_TEMP/xcfpub"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE"
-          cp scripts/publish-xcframework.gradle "$STAGE/build.gradle"
-          : > "$STAGE/settings.gradle"
-
-          ZIP="$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.zip"
-          /opt/homebrew/bin/gradle \
-            -p "$STAGE" \
-            publishIosXcframeworkPublicationToGCSRepository \
-            --no-daemon --stacktrace \
-            -PxcframeworkZip="$ZIP" \
-            -PsdkVersion="$VERSION"
-
-      - name: Upload to Gitea Swift Package Registry
+      - name: Build and publish all artifacts
+        run: ./gradlew publishAll --no-daemon
         env:
           GITEA_URL: ${{ secrets.GITEA_URL }}
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish swiftkit-core to GCS Maven
+        shell: bash --noprofile --norc {0}
         run: |
-          set -euo pipefail
-          VERSION=$(grep '^VERSION_NAME=' android/gradle.properties | cut -d= -f2)
-          CHECKSUM=$(cat "$RUNNER_TEMP/xcframework/SwiftAndroidSDK.xcframework.sha256")
-          SCOPE="dallaslabs-sdk"
-          NAME="swift-android-sdk"
-          XCF_URL="https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven/com/dallaslabs/sdk/swift-android-sdk-ios/${VERSION}/swift-android-sdk-ios-${VERSION}.zip"
-
-          # Create source archive with single top-level directory (required by SPM)
-          PKG_DIR="$RUNNER_TEMP/swift-pkg/${NAME}-${VERSION}"
-          mkdir -p "$PKG_DIR"
-
-          cat > "$PKG_DIR/Package.swift" <<'SWIFTEOF'
-          // swift-tools-version: 5.9
-          import PackageDescription
-          let package = Package(
-              name: "SwiftAndroidSDK",
-              platforms: [.iOS(.v15), .macOS(.v12)],
-              products: [
-                  .library(name: "SwiftAndroidSDK", targets: ["SwiftAndroidSDK"]),
-              ],
-              targets: [
-                  .binaryTarget(
-                      name: "SwiftAndroidSDK",
-                      url: "PLACEHOLDER_URL",
-                      checksum: "PLACEHOLDER_CHECKSUM"
-                  ),
-              ]
-          )
-          SWIFTEOF
-          # Strip leading whitespace from heredoc and substitute variables
-          sed -i '' 's/^          //' "$PKG_DIR/Package.swift"
-          sed -i '' "s|PLACEHOLDER_URL|${XCF_URL}|" "$PKG_DIR/Package.swift"
-          sed -i '' "s|PLACEHOLDER_CHECKSUM|${CHECKSUM}|" "$PKG_DIR/Package.swift"
-
-          # Zip with single top-level directory
-          PKG_ZIP="$RUNNER_TEMP/${NAME}-${VERSION}.zip"
-          (cd "$RUNNER_TEMP/swift-pkg" && zip -qry "$PKG_ZIP" "${NAME}-${VERSION}")
-          ls -lh "$PKG_ZIP"
-
-          # Upload to Gitea with metadata
-          URL="${GITEA_URL}/api/packages/${SCOPE}/swift/${SCOPE}/${NAME}/${VERSION}"
-          METADATA='{"@context":["http://schema.org/"],"@type":"SoftwareSourceCode","name":"'"${NAME}"'","version":"'"${VERSION}"'","description":"Swift Android SDK for iOS","author":{"@type":"Person","givenName":"Dallas","familyName":"Labs","name":"Dallas Labs"},"programmingLanguage":{"@type":"ComputerLanguage","name":"Swift","url":"https://swift.org"}}'
-          HTTP=$(curl -sS -o /tmp/upload.body -w '%{http_code}' \
-            -X PUT \
-            -H "Accept: application/vnd.swift.registry.v1+json" \
-            -H "Authorization: token ${GITEA_TOKEN}" \
-            -F "metadata=${METADATA};type=application/json" \
-            -F "source-archive=@${PKG_ZIP};type=application/zip" \
-            "${URL}")
-          echo "PUT → HTTP $HTTP"
-          if [[ "$HTTP" == "409" ]]; then
-            echo "Version ${VERSION} already exists — skipping (idempotent)"
-          elif [[ "$HTTP" != "201" ]]; then
-            cat /tmp/upload.body
-            exit 1
+          set +e
+          JAR=$(find ~/.m2/repository/org/swift/swiftkit/swiftkit-core/1.0-SNAPSHOT -name "swiftkit-core-*.jar" ! -name "*sources*" ! -name "*javadoc*" | head -1)
+          if [[ -n "$JAR" ]]; then
+            STAGE="$RUNNER_TEMP/swiftkit-pub"
+            rm -rf "$STAGE" && mkdir -p "$STAGE"
+            cp scripts/publish-swiftkit-core.gradle "$STAGE/build.gradle"
+            : > "$STAGE/settings.gradle"
+            /opt/homebrew/bin/gradle -p "$STAGE" publishSwiftkitCorePublicationToGCSRepository --no-daemon -PjarPath="$JAR" 2>&1
           fi
-          echo "Published ${SCOPE}.${NAME} v${VERSION} to Gitea Swift Registry"

@@ -64,7 +64,7 @@ Sources/SwiftAndroidSDK/
 maven { url = uri("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven") }
 
 // app/build.gradle.kts
-implementation("com.dallaslabs.sdk:swift-android-sdk:1.1.7")
+implementation("com.dallaslabs.sdk:swift-android-sdk:1.2.0")
 ```
 
 **iOS (Gitea Swift Package Registry):**
@@ -77,7 +77,7 @@ swift package-registry set --global --scope dallaslabs-sdk --allow-insecure-http
 Then in your `Package.swift`:
 ```swift
 dependencies: [
-    .package(id: "dallaslabs-sdk.swift-android-sdk", from: "1.1.7"),
+    .package(id: "dallaslabs-sdk.swift-android-sdk", from: "1.2.0"),
 ]
 ```
 SPM queries Gitea for the version, Gitea returns a `Package.swift` with a `binaryTarget` pointing at GCS, and SPM downloads the XCFramework automatically. No zip URLs in client code.
@@ -91,7 +91,22 @@ SPM queries Gitea for the version, Gitea returns a `Package.swift` with a `binar
 - 5 TMDB REST tests (needs `TMDB_READ_TOKEN` env var)
 - 28 unit tests with mocks
 
-Run locally: `swift test`
+Run locally: `swift test` or `./gradlew swiftTest`
+
+## Build System
+
+This SDK uses the [swift-multiplatform Gradle plugin](https://github.com/erikg84/swift-multiplatform-gradle-plugin) to build both Android and iOS artifacts from a single Swift source tree.
+
+- **One `Package.swift`** — dependency manifest for both platforms
+- **One `build.gradle.kts`** — configures the plugin (~35 lines)
+- **One command** — `./gradlew publishAll` builds and publishes everything
+- **No symlinks, no shell scripts, no dual configuration**
+
+```bash
+./gradlew buildAll      # Android AAR + iOS XCFramework
+./gradlew publishAll    # → GCS Maven + GCS + Gitea
+./gradlew swiftTest     # host-platform tests
+```
 
 ## Client Apps
 
