@@ -1,5 +1,5 @@
 plugins {
-    id("com.dallaslabs.swift-multiplatform") version "0.1.5"
+    id("com.dallaslabs.swift-multiplatform") version "0.1.10"
 }
 
 swiftMultiplatform {
@@ -22,13 +22,14 @@ swiftMultiplatform {
         targets("ios-arm64", "ios-simulator-arm64")
         minimumDeployment.set("15.0")
         frameworkName.set("SwiftAndroidSDK")
+        buildScript.set("scripts/build-xcframework.sh")
     }
 
     publishing {
         maven {
             groupId.set("com.dallaslabs.sdk")
             artifactId.set("swift-android-sdk")
-            repository.set("https://storage.googleapis.com/dallaslabs-sdk-artifacts/maven")
+            repository.set("gcs://dallaslabs-sdk-artifacts/maven")
         }
         gitea {
             registryUrl.set(providers.gradleProperty("GITEA_URL"))
@@ -37,4 +38,8 @@ swiftMultiplatform {
             packageName.set("swift-android-sdk")
         }
     }
+}
+
+dependencies {
+    "implementation"("org.swift.swiftkit:swiftkit-core:1.0-SNAPSHOT")
 }
