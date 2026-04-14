@@ -5,8 +5,8 @@ pluginManagement {
         mavenCentral()
         mavenLocal()
         maven {
-            name = "DallasLabsPlugins"
-            url = uri("https://maven.pkg.github.com/erikg84/swift-multiplatform-gradle-plugin")
+            name = "SwiftMultiplatformPlugin"
+            url = uri("https://maven.pkg.github.com/erikg84/swift-multiplatform-plugin")
             credentials {
                 username = providers.gradleProperty("gpr.user").orNull
                     ?: System.getenv("GITHUB_ACTOR") ?: ""
